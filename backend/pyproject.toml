@@ -1,0 +1,49 @@
+[project]
+name = "prosthetic-hand-llm-lab"
+version = "1.0.0"
+description = "Backend for the Prosthetic Hand LLM Evaluation Platform (HANDi EPN V3)"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.118",
+    "uvicorn[standard]>=0.37",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "psycopg[binary]>=3.2",
+    "litellm>=1.63",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3",
+    "numpy>=2.1",
+    "websockets>=14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.14",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008", "E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true

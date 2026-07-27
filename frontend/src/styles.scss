@@ -1,0 +1,123 @@
+@use '@angular/material' as mat;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Angular Material 3 — light theme only.
+//
+// The generated palettes only get the theme structurally close; the exact five
+// project colours are pinned afterwards through the M3 system tokens, so
+// Material components and Tailwind utilities resolve to the same hex values.
+// ─────────────────────────────────────────────────────────────────────────────
+html {
+  color-scheme: light;
+
+  @include mat.theme((
+    color: (
+      primary: mat.$rose-palette,
+      tertiary: mat.$azure-palette,
+      theme-type: light,
+    ),
+    typography: (
+      plain-family: Inter,
+      brand-family: Inter,
+    ),
+    density: -1,
+  ));
+
+  // Project palette
+  --brand-navy: #001F3F;
+  --brand-pink: #D81B60;
+  --brand-amber: #FFC107;
+  --brand-white: #FFFFFF;
+  --brand-black: #000000;
+
+  // Pin the Material system tokens to the palette.
+  --mat-sys-primary: var(--brand-pink);
+  --mat-sys-on-primary: var(--brand-white);
+  --mat-sys-primary-container: #FCE4EC;
+  --mat-sys-on-primary-container: #4A0A22;
+
+  --mat-sys-secondary: var(--brand-navy);
+  --mat-sys-on-secondary: var(--brand-white);
+  --mat-sys-secondary-container: #EAEFF4;
+  --mat-sys-on-secondary-container: var(--brand-navy);
+
+  --mat-sys-tertiary: var(--brand-amber);
+  --mat-sys-on-tertiary: var(--brand-black);
+  --mat-sys-tertiary-container: #FFF4D1;
+  --mat-sys-on-tertiary-container: #4A3600;
+
+  --mat-sys-error: var(--brand-pink);
+  --mat-sys-on-error: var(--brand-white);
+
+  --mat-sys-surface: var(--brand-white);
+  --mat-sys-surface-container: #F5F8FA;
+  --mat-sys-surface-container-low: #FAFCFD;
+  --mat-sys-surface-container-high: #EAEFF4;
+  --mat-sys-on-surface: var(--brand-navy);
+  --mat-sys-on-surface-variant: #4A657D;
+  --mat-sys-outline: #AEBECC;
+  --mat-sys-outline-variant: #D6DEE6;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: #ffffff;
+  color: #001f3f;
+  font-family: Inter, system-ui, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+// ─── Scrollbars ──────────────────────────────────────────────────────────────
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #aebecc transparent;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #d6dee6; border-radius: 5px; }
+*::-webkit-scrollbar-thumb:hover { background: #aebecc; }
+
+// ─── Shared laboratory chrome ────────────────────────────────────────────────
+.lab-card {
+  @apply rounded-lg border border-ink-200 bg-white shadow-panel;
+}
+.lab-label {
+  @apply text-[11px] font-semibold uppercase tracking-wider text-ink-500;
+}
+.lab-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-ligatures: none;
+}
+.lab-chip {
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold;
+}
+.lab-input {
+  @apply w-full rounded border border-ink-200 bg-white px-2 py-1 text-ink-900
+         outline-none transition-colors focus:border-pink;
+}
+
+// ─── Material density and surface tweaks ─────────────────────────────────────
+// The left panel packs a lot of controls into half a screen, so the default
+// Material spacing is tightened rather than letting the panel scroll forever.
+.mat-mdc-form-field { width: 100%; }
+.mat-mdc-form-field-subscript-wrapper { display: none; }
+.dense-field .mat-mdc-text-field-wrapper { background: #ffffff; }
+
+.mat-expansion-panel {
+  background: #ffffff !important;
+  border: 1px solid #d6dee6;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}
+.mat-expansion-panel:not(:last-of-type) { margin-bottom: 10px; }
+.mat-expansion-panel-header { height: 46px !important; }
+.mat-expansion-panel-header:hover { background: #f5f8fa !important; }
+.mat-expansion-panel-body { padding: 0 16px 16px !important; }
+
+.mat-mdc-slider { --mdc-slider-handle-color: #D81B60; }

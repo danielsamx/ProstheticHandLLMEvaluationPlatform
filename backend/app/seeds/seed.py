@@ -1,0 +1,393 @@
+"""Idempotent seed: providers, a starter model catalogue and the baseline
+prompt versions generated from the technical manuals.
+
+Run with ``python -m app.seeds.seed``.  Safe to re-run.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.logging import configure_logging, get_logger
+from app.db.session import AsyncSessionLocal
+from app.domain.hand_spec import LimitProfileId, get_limit_profile
+from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration
+from app.models.prompts import (
+    DynamicPromptTemplate,
+    SystemPromptVersion,
+    TechnicalContextVersion,
+)
+from app.prompts.dynamic_prompt import (
+    DEFAULT_DYNAMIC_TEMPLATE,
+    DYNAMIC_TEMPLATE_NAME,
+    DYNAMIC_TEMPLATE_VERSION,
+)
+from app.prompts.system_prompt import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_NAME,
+    SYSTEM_PROMPT_VERSION,
+)
+from app.prompts.technical_context import (
+    TECHNICAL_CONTEXT_NAME,
+    TECHNICAL_CONTEXT_VERSION,
+    build_technical_context,
+)
+
+logger = get_logger(__name__)
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+PROVIDERS = [
+    # LM Studio first: it is the primary runtime for this project.
+    {
+        "slug": "lm_studio",
+        "display_name": "LM Studio (local)",
+        "litellm_prefix": "lm_studio",
+        # Taken from settings so the value is correct whether the backend runs
+        # natively (localhost) or in Docker (host.docker.internal).
+        "api_base": settings.lm_studio_api_base,
+        "api_key_env_var": None,
+        "requires_api_key": False,
+        "is_local": True,
+        "notes": "OpenAI-compatible local server. Start LM Studio, load a model and "
+                 "enable the local server on port 1234. Use POST "
+                 "/api/v1/providers/lm-studio/sync to import whatever is loaded.",
+    },
+    {
+        "slug": "ollama",
+        "display_name": "Ollama (local)",
+        "litellm_prefix": "ollama_chat",
+        "api_base": settings.ollama_api_base,
+        "requires_api_key": False,
+        "is_local": True,
+        "notes": "Secondary local runtime, useful as a cross-check against LM Studio.",
+    },
+    {
+        "slug": "openai",
+        "display_name": "OpenAI",
+        "litellm_prefix": "openai",
+        "api_base": None,
+        "api_key_env_var": "OPENAI_API_KEY",
+        "requires_api_key": True,
+        "is_local": False,
+        "notes": "Hosted baseline for comparison against local models.",
+    },
+    {
+        "slug": "anthropic",
+        "display_name": "Anthropic",
+        "litellm_prefix": "anthropic",
+        "api_base": None,
+        "api_key_env_var": "ANTHROPIC_API_KEY",
+        "requires_api_key": True,
+        "is_local": False,
+        "notes": "Hosted baseline for comparison against local models.",
+    },
+]
+
+#: Starter catalogue. LM Studio entries are placeholders - the real list comes
+#: from /providers/lm-studio/sync once a model is actually loaded.
+MODELS = [
+    {
+        "provider": "lm_studio",
+        "model_key": "qwen2.5-7b-instruct",
+        "display_name": "Qwen2.5 7B Instruct (LM Studio)",
+        "family": "qwen2.5",
+        "parameter_count_b": 7.6,
+        "quantisation": "Q4_K_M",
+        "context_window": 32768,
+        "max_output_tokens": 4096,
+        "supports_json_mode": True,
+        "supports_json_schema": True,
+        "supports_seed": True,
+        "supports_top_k": True,
+    },
+    {
+        "provider": "lm_studio",
+        "model_key": "llama-3.1-8b-instruct",
+        "display_name": "Llama 3.1 8B Instruct (LM Studio)",
+        "family": "llama3.1",
+        "parameter_count_b": 8.0,
+        "quantisation": "Q4_K_M",
+        "context_window": 131072,
+        "max_output_tokens": 4096,
+        "supports_json_mode": True,
+        "supports_json_schema": True,
+        "supports_seed": True,
+        "supports_top_k": True,
+    },
+    {
+        "provider": "lm_studio",
+        "model_key": "mistral-7b-instruct-v0.3",
+        "display_name": "Mistral 7B Instruct v0.3 (LM Studio)",
+        "family": "mistral",
+        "parameter_count_b": 7.2,
+        "quantisation": "Q4_K_M",
+        "context_window": 32768,
+        "max_output_tokens": 4096,
+        "supports_json_mode": True,
+        "supports_json_schema": False,
+        "supports_seed": True,
+        "supports_top_k": True,
+    },
+]
+
+
+async def _seed_providers(session: AsyncSession) -> dict[str, LlmProvider]:
+    result: dict[str, LlmProvider] = {}
+    for spec in PROVIDERS:
+        row = (
+            await session.execute(
+                select(LlmProvider).where(LlmProvider.slug == spec["slug"])
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = LlmProvider(**spec)
+            session.add(row)
+            await session.flush()
+            logger.info("seeded_provider", extra={"slug": spec["slug"]})
+        elif row.is_local and row.api_base != spec["api_base"]:
+            # Self-heal: the correct endpoint differs between a native run and a
+            # containerised one, and a stale row would silently route every
+            # local inference at the wrong host.
+            logger.info(
+                "updated_provider_api_base",
+                extra={"slug": spec["slug"], "from": row.api_base, "to": spec["api_base"]},
+            )
+            row.api_base = spec["api_base"]
+            await session.flush()
+        result[spec["slug"]] = row
+    return result
+
+
+async def _seed_models(session: AsyncSession, providers: dict[str, LlmProvider]) -> list[LlmModel]:
+    created: list[LlmModel] = []
+    for spec in MODELS:
+        provider = providers[spec["provider"]]
+        existing = (
+            await session.execute(
+                select(LlmModel).where(
+                    LlmModel.provider_id == provider.id,
+                    LlmModel.model_key == spec["model_key"],
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            created.append(existing)
+            continue
+        payload = {k: v for k, v in spec.items() if k != "provider"}
+        row = LlmModel(provider_id=provider.id, **payload)
+        session.add(row)
+        await session.flush()
+        created.append(row)
+        logger.info("seeded_model", extra={"model": spec["model_key"]})
+    return created
+
+
+async def _resolve_artefact_version(
+    session: AsyncSession, model_cls, name: str, version: str, digest: str
+) -> str | None:
+    """Decide which version tag a generated prompt artefact should be stored under.
+
+    Returns the version to insert, or ``None`` when the exact content is already
+    present and nothing needs writing.
+
+    Two separate keys are in play and conflating them is what broke the seed
+    before: idempotency was tested on ``content_sha256`` while the table's
+    unique constraint is on ``(name, version)``. Regenerating the technical
+    context after a domain change produced new content under the same name and
+    version, so the insert always violated the constraint and the container
+    restart-looped.
+
+    Prompt versions are immutable — a published result must resolve to the exact
+    bytes that produced it — so an existing row is never overwritten. When the
+    generated text has drifted without a version bump, the new content is filed
+    under a content-addressed suffix instead, which keeps history intact and
+    makes the drift visible rather than silent.
+    """
+    by_digest = (
+        await session.execute(select(model_cls).where(model_cls.content_sha256 == digest))
+    ).scalar_one_or_none()
+    if by_digest is not None:
+        return None
+
+    by_name = (
+        await session.execute(
+            select(model_cls).where(model_cls.name == name, model_cls.version == version)
+        )
+    ).scalar_one_or_none()
+    if by_name is None:
+        return version
+
+    suffixed = f"{version}+{digest[:8]}"
+    logger.warning(
+        "generated_prompt_drifted",
+        extra={
+            "artefact": model_cls.__name__,
+            "name": name,
+            "declared_version": version,
+            "stored_under": suffixed,
+        },
+    )
+    return suffixed
+
+
+async def _deactivate_generated(session: AsyncSession, model_cls) -> None:
+    """Only one generated default may be active at a time."""
+    await session.execute(
+        update(model_cls)
+        .where(model_cls.is_system_default.is_(True))
+        .values(is_active=False, is_system_default=False)
+    )
+
+
+async def _seed_prompts(session: AsyncSession) -> None:
+    # ── Block 1 ─────────────────────────────────────────────────────────────
+    digest = _sha(SYSTEM_PROMPT)
+    version = await _resolve_artefact_version(
+        session, SystemPromptVersion, SYSTEM_PROMPT_NAME, SYSTEM_PROMPT_VERSION, digest
+    )
+    if version is not None:
+        await _deactivate_generated(session, SystemPromptVersion)
+        session.add(
+            SystemPromptVersion(
+                name=SYSTEM_PROMPT_NAME,
+                version=version,
+                content=SYSTEM_PROMPT,
+                content_sha256=digest,
+                description="Baseline behaviour contract derived from the HANDi EPN V3 manuals.",
+                char_count=len(SYSTEM_PROMPT),
+                is_active=True,
+                is_system_default=True,
+            )
+        )
+        await session.flush()
+        logger.info("seeded_system_prompt", extra={"version": version})
+
+    # ── Block 2: one context per limit profile ──────────────────────────────
+    deactivated_contexts = False
+    for profile_id in LimitProfileId:
+        profile = get_limit_profile(profile_id)
+        content = build_technical_context(profile)
+        digest = _sha(content)
+        name = f"{TECHNICAL_CONTEXT_NAME} [{profile_id.value}]"
+        version = await _resolve_artefact_version(
+            session, TechnicalContextVersion, name, TECHNICAL_CONTEXT_VERSION, digest
+        )
+        if version is None:
+            continue
+
+        is_default = profile_id is LimitProfileId.TABLE_5_V3
+        if is_default and not deactivated_contexts:
+            await _deactivate_generated(session, TechnicalContextVersion)
+            deactivated_contexts = True
+
+        session.add(
+            TechnicalContextVersion(
+                name=name,
+                version=version,
+                content=content,
+                content_sha256=digest,
+                description=profile.notes,
+                char_count=len(content),
+                is_active=is_default,
+                is_system_default=is_default,
+                limit_profile=profile_id.value,
+                generated_from_domain=True,
+                includes_json_schema=True,
+            )
+        )
+        await session.flush()
+        logger.info(
+            "seeded_technical_context",
+            extra={"profile": profile_id.value, "version": version},
+        )
+
+    # ── Block 3 ─────────────────────────────────────────────────────────────
+    digest = _sha(DEFAULT_DYNAMIC_TEMPLATE)
+    version = await _resolve_artefact_version(
+        session, DynamicPromptTemplate, DYNAMIC_TEMPLATE_NAME, DYNAMIC_TEMPLATE_VERSION, digest
+    )
+    if version is not None:
+        await _deactivate_generated(session, DynamicPromptTemplate)
+        session.add(
+            DynamicPromptTemplate(
+                name=DYNAMIC_TEMPLATE_NAME,
+                version=version,
+                content=DEFAULT_DYNAMIC_TEMPLATE,
+                content_sha256=digest,
+                description="Raw EMG matrix plus the derived feature table.",
+                char_count=len(DEFAULT_DYNAMIC_TEMPLATE),
+                is_active=True,
+                is_system_default=True,
+                required_placeholders=[
+                    "hand", "experiment_type", "source_mode", "sample_count",
+                    "sample_rate_hz", "window_ms", "subject_block", "matrix_rows",
+                    "channel_count", "channel_order", "decimation_note",
+                    "matrix_block", "feature_block", "mean_rms", "flexor",
+                    "extensor", "extra_block",
+                ],
+            )
+        )
+        await session.flush()
+        logger.info("seeded_dynamic_template", extra={"version": version})
+
+
+async def _seed_configurations(session: AsyncSession, models: list[LlmModel]) -> None:
+    """A deterministic default per model.
+
+    Temperature 0 / top_p 1 / fixed seed is the correct starting point for this
+    task: we are measuring instruction adherence, not creativity.
+    """
+    for model in models:
+        name = f"Deterministic - {model.display_name}"
+        existing = (
+            await session.execute(
+                select(SamplingConfiguration).where(
+                    SamplingConfiguration.name == name,
+                    SamplingConfiguration.model_id == model.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            continue
+        session.add(
+            SamplingConfiguration(
+                name=name,
+                description="Greedy decoding baseline: temperature 0, fixed seed. "
+                            "Use this as the control condition.",
+                model_id=model.id,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=None,
+                max_tokens=1024,
+                seed=42 if model.supports_seed else None,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
+                response_format="json_schema" if model.supports_json_schema else "json_object",
+                is_favorite=True,
+            )
+        )
+        logger.info("seeded_configuration", extra={"model": model.model_key})
+
+
+async def seed() -> None:
+    configure_logging()
+    async with AsyncSessionLocal() as session:
+        providers = await _seed_providers(session)
+        models = await _seed_models(session, providers)
+        await _seed_prompts(session)
+        await _seed_configurations(session, models)
+        await session.commit()
+    logger.info("seed_complete")
+
+
+if __name__ == "__main__":
+    asyncio.run(seed())

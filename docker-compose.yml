@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: phlab-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-phlab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-phlab}
+      POSTGRES_DB: ${POSTGRES_DB:-prosthetic_lab}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-phlab} -d ${POSTGRES_DB:-prosthetic_lab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: phlab-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-phlab}:${POSTGRES_PASSWORD:-phlab}@db:5432/${POSTGRES_DB:-prosthetic_lab}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-phlab}:${POSTGRES_PASSWORD:-phlab}@db:5432/${POSTGRES_DB:-prosthetic_lab}
+      # Inside the container "localhost" is the container itself. LM Studio and
+      # Ollama run on the developer's machine, so they must be reached through
+      # the host gateway.
+      LM_STUDIO_API_BASE: ${LM_STUDIO_API_BASE:-http://host.docker.internal:1234/v1}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+    env_file:
+      - .env
+    # Docker Desktop provides host.docker.internal automatically; this mapping
+    # is what makes the same compose file work on native Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.seeds.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: phlab-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm start -- --host 0.0.0.0 --poll 2000
+
+volumes:
+  pgdata:
