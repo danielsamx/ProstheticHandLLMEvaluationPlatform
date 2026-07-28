@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.domain.hand_spec import get_limit_profile
+from app.models.llm import LlmModel
 from app.models.prompts import (
     DynamicPromptTemplate,
     SystemPromptVersion,
     TechnicalContextVersion,
 )
+from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
 from app.prompts.technical_context import build_technical_context
 from app.schemas.api import (
@@ -228,6 +230,21 @@ async def preview_prompt(
         merge_context_into_system=payload.merge_context_into_system,
     )
 
+    # The context window that matters is the one the model was *loaded* with,
+    # which LM Studio sets well below the architecture's maximum.
+    context_window: int | None = None
+    if payload.model_id is not None:
+        model = await session.get(LlmModel, payload.model_id)
+        context_window = model.context_window if model else None
+
+    budget = prompt_budget.check(
+        system_prompt=assembled.system_prompt,
+        technical_context=assembled.technical_context,
+        dynamic_prompt=assembled.dynamic_prompt,
+        context_window=context_window,
+        matrix_rows=min(payload.window.sample_count, 64),
+    )
+
     return PromptPreviewOut(
         system_prompt=assembled.system_prompt,
         technical_context=assembled.technical_context,
@@ -241,8 +258,11 @@ async def preview_prompt(
         dynamic_prompt_sha256=assembled.dynamic_prompt_sha256,
         frozen_context_sha256=assembled.frozen_context_sha256,
         full_prompt_sha256=assembled.full_prompt_sha256,
-        # Rough heuristic; exact counts come back from the provider after a run.
-        estimated_prompt_tokens=len(assembled.full_prompt) // 4,
+        estimated_prompt_tokens=budget.prompt_tokens,
+        token_breakdown=budget.breakdown,
+        context_window=budget.context_window,
+        fits_context=budget.fits,
+        budget_advice=budget.advice,
     )
 
 

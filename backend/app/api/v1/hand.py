@@ -33,7 +33,7 @@ from app.domain.hand_spec import (
 )
 from app.domain.kinematics import actuator_joint_map
 from app.schemas.api import HandSpecOut
-from app.schemas.llm_output import llm_json_schema
+from app.schemas.llm_output import output_contract
 
 router = APIRouter(prefix="/hand", tags=["hand"])
 
@@ -113,6 +113,16 @@ async def get_actuator_joint_map() -> dict[str, list[str]]:
     return actuator_joint_map()
 
 
-@router.get("/output-schema", summary="JSON Schema the LLM must satisfy")
-async def get_output_schema() -> dict:
-    return llm_json_schema()
+@router.get("/output-contract", summary="What the model must reply with")
+async def get_output_contract() -> dict:
+    """The response contract, as stated to the model.
+
+    One line: the serial command. Exposed so a client can show the researcher
+    exactly what is being asked for without reassembling the prompt.
+    """
+    return {
+        "form": "one line containing only the serial command",
+        "contract": output_contract(),
+        "position_letters": [a.value for a in ACTUATORS],
+        "gesture_letters": [c.value for c in GESTURES],
+    }

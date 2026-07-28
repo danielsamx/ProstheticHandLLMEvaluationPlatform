@@ -13,13 +13,19 @@ class Severity(str, Enum):
 
 
 class ValidationStage(str, Enum):
-    PARSE = "parse"                # response is valid JSON
-    SCHEMA = "schema"              # matches ProstheticCommand
-    PROTOCOL = "protocol"          # serial_command is well formed
-    CONSISTENCY = "consistency"    # serial_command agrees with structured fields
-    RANGE = "range"                # positions inside the active limit profile
-    KINEMATIC = "kinematic"        # pose is physically reachable
-    SAFETY = "safety"              # speed, collision, force, exclusivity rules
+    """The gate a response must clear before it can move anything.
+
+    Five stages, not seven. `schema` and `consistency` existed only to check a
+    JSON object against itself; now that the model emits the command line
+    directly there is no second representation to disagree with. Every stage
+    that stands between a response and the hardware remains.
+    """
+
+    PARSE = "parse"              # a command line could be recovered
+    PROTOCOL = "protocol"        # it is a well-formed, existing command
+    RANGE = "range"              # positions inside the active limit profile
+    KINEMATIC = "kinematic"      # the pose is physically reachable
+    SAFETY = "safety"            # exclusivity, speed, collision rules
 
 
 @dataclass(slots=True)

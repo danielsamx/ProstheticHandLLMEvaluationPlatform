@@ -23,9 +23,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.request_context import current_context
+from app.db.relationships import prime as prime_relationships
 from app.domain.hand_spec import Handedness, get_limit_profile
 from app.models.emg import EmgWindowRecord
 from app.models.enums import ErrorCategory, ExecutionStatus
@@ -40,9 +42,9 @@ from app.models.prompts import (
 from app.models.audit import AuditAction, AuditOutcome
 from app.models.execution_log import ExecutionLog, LogLevel
 from app.models.validation import ExecutionError, ValidationIssueRecord, ValidationResult
+from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
-from app.schemas.llm_output import llm_json_schema
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services.metrics_service import compute_metrics
@@ -95,9 +97,11 @@ async def run_execution(
         rotating file.
         """
         nonlocal log_sequence
-        session.add(
+        # Appended to the relationship rather than inserted with a bare foreign
+        # key: a child attached by FK alone leaves `execution.logs` unloaded, and
+        # reading it later triggers a lazy SELECT outside the async greenlet.
+        execution.logs.append(
             ExecutionLog(
-                execution_id=execution.id,
                 sequence=log_sequence,
                 level=level.value,
                 stage=stage,
@@ -174,7 +178,7 @@ async def run_execution(
         system_prompt_version_id=system_version.id if system_version else None,
         technical_context_version_id=context_version.id if context_version else None,
         dynamic_prompt_template_id=template_version.id if template_version else None,
-        emg_window_id=emg_record.id,
+        emg_window=emg_record,
         model_snapshot=_model_snapshot(model, provider, config),
         litellm_model=f"{provider.litellm_prefix}/{model.model_key}",
         provider_slug=provider.slug,
@@ -214,11 +218,48 @@ async def run_execution(
     session.add(execution)
     await session.flush()
 
+    # Mark every relationship as loaded-and-empty before anything touches it.
+    #
+    # `Execution` is created here, never loaded by a SELECT, so its eager loaders
+    # never run and every relationship starts *unloaded*. In async SQLAlchemy any
+    # access to an unloaded relationship emits a lazy SELECT outside the greenlet
+    # and fails with MissingGreenlet. Two distinct accesses hit this:
+    #
+    #   * `execution.logs.append(...)` — appending to a collection reads it first
+    #   * the response schema reading `validation_result` / `metrics` / `movement`
+    #     on the provider-error path, which returns before they are assigned
+    #
+    # `prime` marks every relationship as already loaded, bypassing the loader
+    # and the cascade machinery. See app/db/relationships.py for why a plain
+    # assignment is not enough for the collections.
+    prime_relationships(execution)
+
+    # Check the budget before spending the request. Overflowing the context
+    # window fails at the provider with a message the researcher cannot act on
+    # without reading the runtime's own log.
+    budget = prompt_budget.check(
+        system_prompt=assembled.system_prompt,
+        technical_context=assembled.technical_context,
+        dynamic_prompt=assembled.dynamic_prompt,
+        context_window=model.context_window,
+        completion_reserve=config.max_tokens,
+        matrix_rows=min(window.sample_count, 64),
+    )
+
     log(LogLevel.INFO, "prompt",
-        "Assembled the three-block prompt.",
+        f"Assembled the three-block prompt. {budget.summary()}",
         chars=assembled.char_counts(),
+        estimated_tokens=budget.breakdown,
         frozen_context_sha256=assembled.frozen_context_sha256,
         limit_profile=profile.id.value)
+
+    if not budget.fits:
+        log(LogLevel.WARNING, "prompt",
+            "The prompt is estimated to exceed the model's context window; the "
+            "runtime will probably reject it.",
+            estimated_prompt_tokens=budget.prompt_tokens,
+            context_window=budget.context_window,
+            advice=budget.advice)
 
     # ── 4. Invoke the model ─────────────────────────────────────────────────
     call: LlmCallResult | None = None
@@ -230,8 +271,10 @@ async def run_execution(
             api_base=provider.api_base,
             is_local=provider.is_local,
             sampling=config.to_litellm_kwargs(),
-            response_format_mode=_response_format_mode(config, model),
-            json_schema=llm_json_schema() if model.supports_json_schema else None,
+            # The reply is a command line, not a document: there is no schema
+            # to enforce and no JSON mode to ask for.
+            response_format_mode="text",
+            json_schema=None,
         )
     except LlmCallError as exc:
         execution.status = (
@@ -241,21 +284,31 @@ async def run_execution(
         )
         execution.finished_at = datetime.now(timezone.utc)
         execution.validation_passed = False
-        session.add(
+        execution.errors.append(
             ExecutionError(
-                execution_id=execution.id,
                 category=ErrorCategory.PROVIDER.value,
                 error_type=exc.error_type,
                 message=str(exc),
                 provider_status_code=exc.status_code,
                 provider_error_code=exc.provider_code,
                 is_retryable=exc.retryable,
-                context={"model": execution.litellm_model, "provider": provider.slug},
+                context={
+                    "model": execution.litellm_model,
+                    "provider": provider.slug,
+                    "api_base": provider.api_base,
+                    # Without this the researcher only sees "BadRequestError",
+                    # which names the class of failure but never the cause.
+                    "hint": exc.hint,
+                    "prompt_chars": assembled.char_counts()["total"],
+                    "estimated_prompt_tokens": assembled.char_counts()["total"] // 4,
+                },
             )
         )
         log(LogLevel.ERROR, "provider", str(exc),
             error_type=exc.error_type, retryable=exc.retryable,
-            status_code=exc.status_code)
+            status_code=exc.status_code, hint=exc.hint)
+        if exc.hint:
+            log(LogLevel.WARNING, "provider", exc.hint)
         await audit_service.record(
             session, AuditAction.EXECUTION_FAILED,
             summary=f"Provider error from {execution.litellm_model}: {exc.error_type}",
@@ -269,17 +322,24 @@ async def run_execution(
         await session.flush()
         logger.error(
             "execution_provider_error",
-            extra={"execution_id": str(execution.id), "model": execution.litellm_model,
-                   "error_type": exc.error_type},
+            extra={
+                "execution_id": str(execution.id),
+                "model": execution.litellm_model,
+                "error_type": exc.error_type,
+                "status_code": exc.status_code,
+                # The message is the whole point of the log line; without it the
+                # entry names a category and explains nothing.
+                "provider_message": str(exc)[:600],
+                "hint": exc.hint,
+            },
         )
         return execution
     except Exception as exc:  # platform bug - never silently swallowed
         execution.status = ExecutionStatus.PROVIDER_ERROR.value
         execution.finished_at = datetime.now(timezone.utc)
         execution.validation_passed = False
-        session.add(
+        execution.errors.append(
             ExecutionError(
-                execution_id=execution.id,
                 category=ErrorCategory.INTERNAL.value,
                 error_type=type(exc).__name__,
                 message=str(exc),
@@ -300,6 +360,9 @@ async def run_execution(
     execution.cost_usd = call.cost_usd
     execution.tokens_per_second = call.tokens_per_second
     execution.dropped_parameters = list(call.dropped_params)
+    # What the runtime actually accepted, which may differ from what was asked.
+    # Two runs are only comparable if this matches.
+    execution.response_format = call.effective_response_format
 
     log(LogLevel.INFO, "provider",
         f"Model responded in {call.latency_ms} ms.",
@@ -307,6 +370,13 @@ async def run_execution(
         prompt_tokens=call.prompt_tokens,
         completion_tokens=call.completion_tokens,
         cost_usd=call.cost_usd)
+
+    if call.format_downgraded:
+        log(LogLevel.WARNING, "provider",
+            "The runtime refused the structured-output request; the call was "
+            "retried as free text. The response is still validated, but this run "
+            "was not constrained by the schema.",
+            effective_format=call.effective_response_format)
 
     if call.dropped_params:
         # A silently ignored knob makes a run look reproducible when it is not,
@@ -339,7 +409,6 @@ async def run_execution(
         )
 
     result_row = ValidationResult(
-        execution_id=execution.id,
         passed=report.passed,
         limit_profile=report.limit_profile,
         failed_stage=report.failed_stage.value if report.failed_stage else None,
@@ -349,13 +418,14 @@ async def run_execution(
         normalised_serial=report.normalised_serial,
         duration_ms=report.resolved_pose.duration_ms if report.resolved_pose else None,
     )
-    session.add(result_row)
-    await session.flush()
+    # Assigning through the relationship both sets the foreign key and marks the
+    # attribute as loaded, so the response schema can read it without IO.
+    prime_relationships(result_row)
+    execution.validation_result = result_row
 
     for issue in report.issues:
-        session.add(
+        result_row.issues.append(
             ValidationIssueRecord(
-                validation_result_id=result_row.id,
                 stage=issue.stage.value,
                 code=issue.code,
                 severity=issue.severity.value,
@@ -368,9 +438,8 @@ async def run_execution(
     # A failed validation is a first-class error record, categorised by the
     # stage that rejected it, so failure modes are queryable per model.
     for issue in report.errors:
-        session.add(
+        execution.errors.append(
             ExecutionError(
-                execution_id=execution.id,
                 category=_stage_to_category(issue.stage.value),
                 error_type=issue.code,
                 message=issue.message,
@@ -380,42 +449,40 @@ async def run_execution(
         )
 
     # ── 6. Metrics ──────────────────────────────────────────────────────────
-    session.add(
-        ExecutionMetric(
-            execution_id=execution.id,
-            **compute_metrics(
-                report=report, call=call, window=window,
-                handedness=handedness, profile=profile,
-                repetition_group=repetition_group,
-            ),
+    execution.metrics = ExecutionMetric(
+        **compute_metrics(
+            report=report,
+            call=call,
+            window=window,
+            handedness=handedness,
+            profile=profile,
+            repetition_group=repetition_group,
         )
     )
 
     # ── 7. Simulator frame - ONLY when every stage passed ───────────────────
     if report.passed and report.resolved_pose is not None:
         pose = report.resolved_pose
-        session.add(
-            SimulatorMovement(
-                execution_id=execution.id,
-                handedness=pose.handedness.value,
-                limit_profile=pose.limit_profile,
-                source=pose.source,
-                serial_command=report.normalised_serial,
-                actuator_positions=pose.actuator_positions,
-                actuator_normalised=pose.actuator_normalised,
-                joint_angles=[
-                    {
-                        "joint_id": j.joint_id, "digit": j.digit,
-                        "joint_type": j.joint_type,
-                        "angle_deg": round(j.angle_deg, 3),
-                        "normalised": round(j.normalised, 4),
-                        "driven_by": j.driven_by,
-                    }
-                    for j in pose.joints
-                ],
-                duration_ms=pose.duration_ms,
-                was_rendered=False,
-            )
+        execution.movement = SimulatorMovement(
+            handedness=pose.handedness.value,
+            limit_profile=pose.limit_profile,
+            source=pose.source,
+            serial_command=report.normalised_serial,
+            actuator_positions=pose.actuator_positions,
+            actuator_normalised=pose.actuator_normalised,
+            joint_angles=[
+                {
+                    "joint_id": j.joint_id,
+                    "digit": j.digit,
+                    "joint_type": j.joint_type,
+                    "angle_deg": round(j.angle_deg, 3),
+                    "normalised": round(j.normalised, 4),
+                    "driven_by": j.driven_by,
+                }
+                for j in pose.joints
+            ],
+            duration_ms=pose.duration_ms,
+            was_rendered=False,
         )
         execution.simulator_executed = True
 
@@ -520,21 +587,6 @@ def _model_snapshot(model: LlmModel, provider, config: SamplingConfiguration) ->
             "extra_params": config.extra_params,
         },
     }
-
-
-def _response_format_mode(config: SamplingConfiguration, model: LlmModel) -> str:
-    """Downgrade gracefully when the runtime cannot enforce a format.
-
-    LM Studio supports ``json_schema`` for most GGUF models through its
-    structured-output layer, but the capability is per-model, so we only ask for
-    what the catalogue says is available.
-    """
-    requested = config.response_format or "json_object"
-    if requested == "json_schema" and not model.supports_json_schema:
-        requested = "json_object"
-    if requested == "json_object" and not model.supports_json_mode:
-        requested = "text"
-    return requested
 
 
 def _stage_to_category(stage: str) -> str:

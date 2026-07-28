@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import get_session
 from app.models.experiment import Execution
-from app.schemas.api import ExecutionOut, RunExecutionIn, RunExecutionOut
+from app.models.validation import ValidationIssueRecord, ValidationResult
+from app.schemas.api import (
+    ExecutionOut,
+    ExecutionStats,
+    ModelSummary,
+    RunExecutionIn,
+    RunExecutionOut,
+)
 from app.services.execution_service import ExecutionRequestError, run_execution
 from app.services.metrics_service import aggregate_determinism
 from app.ws.emg_stream import broadcast_movement
@@ -80,6 +88,118 @@ async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_sessi
     return RunExecutionOut(
         executions=[ExecutionOut.model_validate(e) for e in executions],
         determinism=determinism,
+    )
+
+
+@router.get("/stats", response_model=ExecutionStats)
+async def execution_stats(
+    since: datetime | None = None,
+    project_id: uuid.UUID | None = None,
+    experiment_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> ExecutionStats:
+    """Aggregates over every matching execution, computed in the database.
+
+    Deliberately not derived from the list endpoint's page: a dashboard that
+    aggregates the rows it happens to have loaded reports a different number
+    every time the page size changes.
+    """
+    filters = []
+    if since:
+        filters.append(Execution.created_at >= since)
+    if project_id:
+        filters.append(Execution.project_id == project_id)
+    if experiment_id:
+        filters.append(Execution.experiment_id == experiment_id)
+
+    totals = (
+        await session.execute(
+            select(
+                func.count(Execution.id),
+                func.count(Execution.id).filter(Execution.validation_passed.is_(True)),
+                func.count(Execution.id).filter(Execution.validation_passed.is_(False)),
+                func.count(Execution.id).filter(
+                    Execution.status.in_(("provider_error", "timeout"))
+                ),
+                func.count(func.distinct(Execution.litellm_model)),
+                func.count(func.distinct(Execution.emg_window_id)),
+                func.avg(Execution.latency_ms),
+                func.percentile_cont(0.95).within_group(Execution.latency_ms.asc()),
+                func.coalesce(func.sum(Execution.total_tokens), 0),
+                func.coalesce(func.sum(Execution.cost_usd), 0),
+                func.min(Execution.created_at),
+                func.max(Execution.created_at),
+                func.count(func.distinct(Execution.frozen_context_sha256)),
+            ).where(*filters)
+        )
+    ).one()
+
+    per_model = (
+        await session.execute(
+            select(
+                Execution.litellm_model,
+                Execution.provider_slug,
+                func.count(Execution.id),
+                func.count(Execution.id).filter(Execution.validation_passed.is_(True)),
+                func.avg(Execution.latency_ms),
+                func.coalesce(func.sum(Execution.total_tokens), 0),
+                func.coalesce(func.sum(Execution.cost_usd), 0),
+                func.max(Execution.created_at),
+            )
+            .where(*filters, Execution.litellm_model.is_not(None))
+            .group_by(Execution.litellm_model, Execution.provider_slug)
+            .order_by(func.count(Execution.id).desc())
+        )
+    ).all()
+
+    failures = (
+        await session.execute(
+            select(ValidationIssueRecord.code, func.count())
+            .join(
+                ValidationResult,
+                ValidationResult.id == ValidationIssueRecord.validation_result_id,
+            )
+            .join(Execution, Execution.id == ValidationResult.execution_id)
+            .where(*filters, ValidationIssueRecord.severity == "error")
+            .group_by(ValidationIssueRecord.code)
+            .order_by(func.count().desc())
+            .limit(6)
+        )
+    ).all()
+
+    executions = totals[0] or 0
+    return ExecutionStats(
+        executions=executions,
+        passed=totals[1] or 0,
+        failed=totals[2] or 0,
+        provider_errors=totals[3] or 0,
+        pass_rate=round((totals[1] or 0) / executions, 4) if executions else None,
+        distinct_models=totals[4] or 0,
+        distinct_windows=totals[5] or 0,
+        mean_latency_ms=round(float(totals[6]), 1) if totals[6] is not None else None,
+        p95_latency_ms=round(float(totals[7]), 1) if totals[7] is not None else None,
+        total_tokens=int(totals[8] or 0),
+        total_cost_usd=float(totals[9] or 0),
+        first_run_at=totals[10],
+        last_run_at=totals[11],
+        # More than one frozen context means the per-model rows were produced
+        # under different conditions and cannot be compared as they stand.
+        comparable=(totals[12] or 0) <= 1,
+        by_model=[
+            ModelSummary(
+                litellm_model=row[0],
+                provider_slug=row[1],
+                executions=row[2],
+                passed=row[3],
+                pass_rate=round(row[3] / row[2], 4) if row[2] else 0.0,
+                mean_latency_ms=round(float(row[4]), 1) if row[4] is not None else None,
+                total_tokens=int(row[5] or 0),
+                total_cost_usd=float(row[6] or 0),
+                last_run_at=row[7],
+            )
+            for row in per_model
+        ],
+        top_failure_codes=[{"code": code, "count": count} for code, count in failures],
     )
 
 

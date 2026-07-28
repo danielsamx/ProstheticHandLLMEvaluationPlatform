@@ -1,172 +1,133 @@
-"""The strict JSON contract the LLM must emit.
+"""The contract between an arbitrary language model and a physical actuator.
 
-This schema is the interface between an arbitrary language model and a physical
-actuator.  It is deliberately narrow: no free text, no optional prose fields,
-closed enumerations everywhere.  ``model_json_schema()`` is injected verbatim
-into the technical-context prompt block so that the model sees exactly the
-structure it will be validated against.
+The model emits **one line: the serial command**. Nothing else.
+
+    C
+    A320,B180,E45
+    S
+
+That is the whole contract. It used to be a ten-field JSON object, most of which
+was the model's own account of what it had decided — confidence, a pattern
+label, a safety self-assessment. None of that was a measurement: the backend
+already re-derives every safety property independently and never trusted the
+model's version. What remains is the only thing that reaches the prosthesis.
+
+The reduction is not only tidier. A response of two characters instead of two
+hundred tokens removes most of the surface a small model has to get wrong, and
+the failure modes that dominated — prose around the JSON, invented fields, a
+`serial_command` disagreeing with the structured fields it sat beside — cannot
+occur at all.
+
+Everything downstream still works with a structured object: metrics, the
+simulator frame, the export. That object is now *derived* from the command
+rather than parsed from the response, which is why it can no longer contradict
+it.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
-
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.domain.hand_spec import (
-    EMG_CHANNELS,
+    ACTUATORS,
+    GESTURES,
     Actuator,
     ControlCommand,
     Handedness,
-    SAFETY,
 )
+from app.domain.protocol import SerialFrame
 
-ActuatorLetter = Literal["A", "B", "C", "D", "E", "F"]
-GestureLetter = Literal[
-    "O", "C", "P", "R", "W", "Y", "L", "M", "H", "U", "G", "S", "X", "I"
-]
-
-
-class ActuatorCommand(BaseModel):
-    """One positional actuator command."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    actuator: ActuatorLetter = Field(
-        description="Serial command letter: A=pinky, B=ring, C=middle, D=index, "
-        "E=thumb lower/rotation, F=thumb upper/flexion."
-    )
-    position: int = Field(
-        ge=0,
-        le=600,
-        description="Target encoder position. Must respect the per-actuator "
-        "maximum given in the technical context.",
-    )
-    speed_pct: Annotated[int, Field(ge=SAFETY.min_speed_pct, le=SAFETY.max_speed_pct)] = Field(
-        default=SAFETY.default_speed_pct,
-        description="Motion speed as a percentage of maximum motor duty cycle.",
-    )
-
-    @property
-    def actuator_enum(self) -> Actuator:
-        return Actuator(self.actuator)
+#: What the model is asked to send when the window shows no actionable intent.
+#: A command is required in every response, so "do nothing" needs a spelling;
+#: `O` (open) is the documented rest pose and is always safe to execute.
+NO_ACTION_COMMAND: str = "O"
 
 
-class SafetyBlock(BaseModel):
-    """The model's own safety self-assessment. Advisory only - the backend
-    re-derives every field independently and never trusts these values."""
+@dataclass(slots=True)
+class ProstheticCommand:
+    """The internal representation, derived from the emitted command line.
 
-    model_config = ConfigDict(extra="forbid")
+    Kept as a structure because every consumer downstream — metrics, the
+    simulator, the export, the audit record — was built around one. The
+    difference is that nothing here is asserted by the model: each field is
+    computed from the command, so the record cannot disagree with what was
+    actually sent.
+    """
 
-    within_limits: bool = Field(
-        description="True if every commanded position lies inside the documented range."
-    )
-    emergency_stop: bool = Field(
-        default=False,
-        description="True only when the EMG pattern indicates the hand must halt immediately.",
-    )
-    collision_risk: bool = Field(
-        default=False,
-        description="True if the requested pose could drive digits into each other.",
-    )
-
-
-class ProstheticCommand(BaseModel):
-    """Root object. The LLM must emit exactly this and nothing else."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    hand: Literal["right", "left"] = Field(
-        description="Which hand the command targets. Must echo the requested hand."
-    )
-    intent: Literal["gesture", "joint_positions", "stop", "no_action"] = Field(
-        description="'gesture' = use a firmware preset; 'joint_positions' = drive "
-        "individual actuators; 'stop' = emergency halt; 'no_action' = EMG below "
-        "activation threshold, hold current pose."
-    )
-    gesture: GestureLetter | None = Field(
-        default=None,
-        description="Preset gesture letter. Required when intent='gesture' or 'stop', "
-        "otherwise null.",
-    )
-    commands: list[ActuatorCommand] = Field(
-        default_factory=list,
-        max_length=len(Actuator),
-        description="Individual actuator targets. Required when intent='joint_positions', "
-        "otherwise an empty list.",
-    )
-    serial_command: str = Field(
-        min_length=1,
-        max_length=128,
-        description="The exact ASCII line to transmit over Bluetooth SPP, e.g. "
-        "'A320,D120' or 'P'. Use the literal string 'NONE' when intent='no_action'. "
-        "Must be consistent with intent/gesture/commands.",
-    )
-    detected_pattern: str = Field(
-        max_length=64,
-        description="Short machine-readable label for the muscle pattern recognised, "
-        "e.g. 'power_grasp', 'rest', 'lateral_pinch'. Snake case, no spaces.",
-    )
-    confidence: float = Field(
-        ge=0.0, le=1.0,
-        description="Model confidence in the EMG interpretation.",
-    )
-    dominant_channels: list[str] = Field(
-        default_factory=list,
-        max_length=len(EMG_CHANNELS),
-        description="EMG channel labels that drove the decision, e.g. ['CH1','CH5'].",
-    )
-    estimated_duration_ms: int = Field(
-        ge=0, le=SAFETY.max_move_duration_ms,
-        description="Expected time for the motion to complete.",
-    )
-    safety: SafetyBlock
-
-    # ── Cross-field consistency (structural only; physical limits are checked
-    #    by the validation pipeline against the active limit profile) ─────────
-
-    @model_validator(mode="after")
-    def _check_intent_consistency(self) -> "ProstheticCommand":
-        if self.intent == "gesture":
-            if self.gesture is None:
-                raise ValueError("intent='gesture' requires a non-null 'gesture' letter.")
-            if self.commands:
-                raise ValueError("intent='gesture' must not carry individual 'commands'.")
-        elif self.intent == "joint_positions":
-            if not self.commands:
-                raise ValueError("intent='joint_positions' requires at least one command.")
-            if self.gesture is not None:
-                raise ValueError("intent='joint_positions' must set 'gesture' to null.")
-        elif self.intent == "stop":
-            if self.gesture != ControlCommand.STOP.value:
-                raise ValueError("intent='stop' requires gesture='S'.")
-            if self.commands:
-                raise ValueError("intent='stop' must not carry individual 'commands'.")
-        elif self.intent == "no_action":
-            if self.commands or self.gesture is not None:
-                raise ValueError("intent='no_action' must carry no gesture and no commands.")
-            if self.serial_command.strip().upper() != "NONE":
-                raise ValueError("intent='no_action' requires serial_command='NONE'.")
-
-        seen: set[str] = set()
-        for command in self.commands:
-            if command.actuator in seen:
-                raise ValueError(f"Actuator {command.actuator!r} commanded more than once.")
-            seen.add(command.actuator)
-
-        for channel in self.dominant_channels:
-            if channel not in EMG_CHANNELS:
-                raise ValueError(
-                    f"Unknown EMG channel {channel!r}. Valid: {list(EMG_CHANNELS)}"
-                )
-        return self
+    hand: str
+    serial_command: str
+    intent: str
+    gesture: str | None = None
+    commands: list[dict[str, Any]] = field(default_factory=list)
+    detected_pattern: str | None = None
 
     @property
     def handedness(self) -> Handedness:
         return Handedness(self.hand)
 
+    def model_dump(self, mode: str = "python") -> dict[str, Any]:
+        """Serialised form stored on the execution and returned by the API."""
+        return {
+            "hand": self.hand,
+            "serial_command": self.serial_command,
+            "intent": self.intent,
+            "gesture": self.gesture,
+            "commands": self.commands,
+            "detected_pattern": self.detected_pattern,
+        }
 
-def llm_json_schema() -> dict:
-    """JSON Schema injected into the technical context and used for structured
-    output / tool-calling when the provider supports it."""
-    return ProstheticCommand.model_json_schema()
+
+def describe_command(frame: SerialFrame, handedness: Handedness) -> ProstheticCommand:
+    """Build the internal representation from a parsed serial frame.
+
+    The `detected_pattern` label is derived from the gesture the firmware would
+    execute, not claimed by the model. It is therefore a description of the
+    command rather than an opinion about the EMG — which is what it always
+    should have been, since it is used to group results.
+    """
+    controls = frame.controls
+    positions = frame.positions
+
+    if controls:
+        command = controls[0]
+        gesture = GESTURES[command]
+        intent = "stop" if command is ControlCommand.STOP else "gesture"
+        return ProstheticCommand(
+            hand=handedness.value,
+            serial_command=frame.encode(),
+            intent=intent,
+            gesture=command.value,
+            detected_pattern=gesture.name.lower(),
+        )
+
+    return ProstheticCommand(
+        hand=handedness.value,
+        serial_command=frame.encode(),
+        intent="joint_positions",
+        commands=[
+            {"actuator": actuator.value, "position": position,
+             "label": ACTUATORS[actuator].label}
+            for actuator, position in positions.items()
+        ],
+        detected_pattern="custom_pose",
+    )
+
+
+def output_contract() -> str:
+    """The contract as stated to the model, in the technical context."""
+    letters = " ".join(a.value for a in Actuator)
+    gestures = " ".join(c.value for c in GESTURES)
+    return (
+        "Reply with ONE LINE containing ONLY the serial command. No JSON, no "
+        "prose, no explanation, no code fence, no trailing text.\n\n"
+        f"  position form : <LETTER><INTEGER>, comma separated   ({letters})\n"
+        f"  gesture form  : a single letter                      ({gestures})\n\n"
+        "Examples of a complete, correct reply:\n"
+        "  C\n"
+        "  A320,B180,C400,D200\n"
+        "  E120,F350\n"
+        "  S\n\n"
+        f"If the window shows no actionable intent, reply `{NO_ACTION_COMMAND}` "
+        "to hold the hand open."
+    )

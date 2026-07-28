@@ -4,7 +4,12 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { LabStore } from '@core/services/lab.store';
 
-const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinematic', 'safety'];
+//
+// Five stages. `schema` and `consistency` existed only to check a JSON object
+// against itself and against the command line beside it; with the command as
+// the whole response there is nothing left to disagree.
+//
+const STAGES = ['parse', 'protocol', 'range', 'kinematic', 'safety'];
 
 /** Outcome of the most recent execution: metrics, validation trace, raw JSON. */
 @Component({
@@ -42,6 +47,45 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
                   matTooltip="Exact ASCII line for the Bluetooth SPP link">{{ serial }}</span>
           }
         </div>
+
+        <!--
+          Provider failures produce no validation result at all, so without this
+          the panel could only say "failed" and never why. The hint, when the
+          backend recognised the cause, is the actionable part.
+        -->
+        @if (providerErrors().length) {
+          @for (error of providerErrors(); track error.message) {
+            <div class="rounded border border-pink bg-pink/5 p-3">
+              <div class="mb-1 flex items-center gap-2">
+                <mat-icon class="!h-4 !w-4 !text-[16px] text-pink">cloud_off</mat-icon>
+                <span class="text-xs font-semibold text-pink">
+                  {{ error.error_type }}
+                  @if (error.provider_status_code) {
+                    <span class="lab-mono font-normal">({{ error.provider_status_code }})</span>
+                  }
+                </span>
+              </div>
+
+              @if (hintFor(error); as hint) {
+                <p class="mb-2 text-[11px] leading-relaxed text-navy">{{ hint }}</p>
+              }
+
+              <details>
+                <summary class="cursor-pointer text-[11px] text-ink-500">
+                  Message from the runtime
+                </summary>
+                <pre class="lab-mono mt-1 max-h-32 overflow-auto rounded bg-white p-2 text-[10px] leading-relaxed text-ink-600">{{ error.message }}</pre>
+              </details>
+
+              @if (error.context['estimated_prompt_tokens']; as tokens) {
+                <p class="mt-1 text-[10px] text-ink-500">
+                  Prompt sent: ~{{ tokens }} tokens
+                  ({{ error.context['prompt_chars'] }} characters)
+                </p>
+              }
+            </div>
+          }
+        }
 
         <!-- Validation pipeline trace -->
         <div>
@@ -123,10 +167,12 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
               <div class="lab-label">Pattern</div>
               <div class="lab-mono text-xs">{{ metrics.detected_pattern ?? '—' }}</div>
             </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Confidence</div>
+            <div class="rounded border border-ink-200 bg-ink-50 p-2"
+                 matTooltip="The reply was the bare command line, with nothing wrapped around it. The sharpest single measure of instruction adherence.">
+              <div class="lab-label">Clean reply</div>
               <div class="lab-mono text-xs">
-                {{ metrics.model_confidence !== null ? (metrics.model_confidence * 100).toFixed(0) + '%' : '—' }}
+                @if (metrics.is_bare_json) { <span class="text-navy">yes</span> }
+                @else { <span class="text-amber">needed repair</span> }
               </div>
             </div>
             <div class="rounded border border-ink-200 bg-ink-50 p-2"
@@ -178,6 +224,17 @@ export class ResultPanel {
   protected readonly issues = computed(
     () => this.store.lastResult()?.validation_result?.issues ?? [],
   );
+
+  /** Failures that happened before the model ever answered. */
+  protected readonly providerErrors = computed(
+    () => (this.store.lastResult()?.errors ?? [])
+      .filter((e) => e.category === 'provider' || e.category === 'internal'),
+  );
+
+  protected hintFor(error: { context: Record<string, unknown> }): string | null {
+    const hint = error.context['hint'];
+    return typeof hint === 'string' && hint ? hint : null;
+  }
 
   protected stageReached(stage: string): boolean {
     return !!this.store.lastResult()?.validation_result?.stages_completed.includes(stage);

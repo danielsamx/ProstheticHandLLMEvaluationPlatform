@@ -30,6 +30,12 @@ export interface LlmModel {
   input_cost_per_1k: number;
   output_cost_per_1k: number;
   is_enabled: boolean;
+  /**
+   * For local runtimes: is this model loaded right now?
+   * `null` means unknown — a hosted provider, or the runtime was unreachable,
+   * which is not the same as "not loaded".
+   */
+  is_available?: boolean | null;
 }
 
 export interface SamplingConfiguration {
@@ -82,6 +88,10 @@ export interface PromptPreview {
   frozen_context_sha256: string;
   full_prompt_sha256: string;
   estimated_prompt_tokens: number;
+  token_breakdown: Record<string, number>;
+  context_window: number | null;
+  fits_context: boolean;
+  budget_advice: string[];
 }
 
 export interface ValidationIssue {
@@ -128,6 +138,16 @@ export interface ExecutionMetrics {
   extra: Record<string, unknown>;
 }
 
+export interface ExecutionError {
+  category: string;
+  error_type: string;
+  message: string;
+  provider_status_code?: number | null;
+  provider_error_code?: string | null;
+  is_retryable: boolean;
+  context: Record<string, unknown>;
+}
+
 export interface Execution {
   id: string;
   experiment_id: string | null;
@@ -146,6 +166,7 @@ export interface Execution {
   total_tokens: number | null;
   cost_usd: number;
   tokens_per_second: number | null;
+  temperature?: number | null;
   validation_passed: boolean | null;
   simulator_executed: boolean;
   frozen_context_sha256: string | null;
@@ -163,6 +184,7 @@ export interface Execution {
     joint_angles: import('./hand.model').JointAngle[];
     duration_ms: number;
   } | null;
+  errors: ExecutionError[];
 }
 
 export interface RunExecutionResult {
@@ -174,6 +196,39 @@ export interface RunExecutionResult {
     modal_frequency?: number;
     determinism_rate: number | null;
   } | null;
+}
+
+export interface ModelSummary {
+  litellm_model: string;
+  provider_slug: string | null;
+  executions: number;
+  passed: number;
+  pass_rate: number;
+  mean_latency_ms: number | null;
+  total_tokens: number;
+  total_cost_usd: number;
+  last_run_at: string | null;
+}
+
+/** Aggregates computed in the database, not over the loaded page. */
+export interface ExecutionStats {
+  executions: number;
+  passed: number;
+  failed: number;
+  provider_errors: number;
+  pass_rate: number | null;
+  distinct_models: number;
+  distinct_windows: number;
+  mean_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  total_tokens: number;
+  total_cost_usd: number;
+  first_run_at: string | null;
+  last_run_at: string | null;
+  by_model: ModelSummary[];
+  top_failure_codes: Record<string, unknown>[];
+  /** False when the rows span more than one frozen context. */
+  comparable: boolean;
 }
 
 export interface LabPreset {

@@ -5,6 +5,9 @@ import {
 } from '@angular/core';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
+import { provideRouter, withComponentInputBinding, withInMemoryScrolling } from '@angular/router';
+
+import { routes } from './app.routes';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -14,5 +17,11 @@ export const appConfig: ApplicationConfig = {
     provideZonelessChangeDetection(),
     provideHttpClient(withFetch()),
     provideAnimationsAsync(),
+    provideRouter(
+      routes,
+      withComponentInputBinding(),
+      // Returning to the dashboard should not lose your place in a long table.
+      withInMemoryScrolling({ scrollPositionRestoration: 'enabled' }),
+    ),
   ],
 };

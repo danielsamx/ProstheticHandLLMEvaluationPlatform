@@ -45,15 +45,10 @@ export interface EmgMatrixFormat {
   max_rows: number;
 }
 
-export type NormalisationMode = 'none' | 'full_scale' | 'peak';
-
-/** What the backend did to the amplitudes, and whether comparison is safe. */
+/** The parsed window, exactly as the file contained it. */
 export interface MatrixParseResponse {
   window: EmgWindow;
-  normalisation: NormalisationMode;
   observed_peak: number;
-  divisor: number;
-  inferred_full_scale: boolean;
   warnings: string[];
 }
 
@@ -90,14 +85,16 @@ export function computeFeatures(samples: number[][], labels: string[]): EmgChann
       if (value > max) max = value;
     }
 
-    // 0.01 deadband, matching the backend: without it, noise around zero
-    // inflates both counts by an order of magnitude.
+    // Deadband of 5% of this channel's own RMS, matching the backend. It has to
+    // be relative: the units are raw converter output, so a fixed threshold
+    // would depend on the acquisition gain.
+    const deadband = Math.sqrt(sumSquares / rows) * 0.05;
     let zc = 0;
     let wl = 0;
     for (let i = 1; i < rows; i++) {
       const previous = signal[i - 1];
       const current = signal[i];
-      if (previous * current < 0 && Math.abs(previous - current) >= 0.01) zc++;
+      if (previous * current < 0 && Math.abs(previous - current) >= deadband) zc++;
       wl += Math.abs(current - previous);
     }
 
@@ -106,7 +103,7 @@ export function computeFeatures(samples: number[][], labels: string[]): EmgChann
       const a = signal[i - 1];
       const b = signal[i];
       const c = signal[i + 1];
-      if ((b - a) * (b - c) > 0 && (Math.abs(b - a) >= 0.01 || Math.abs(b - c) >= 0.01)) ssc++;
+      if ((b - a) * (b - c) > 0 && (Math.abs(b - a) >= deadband || Math.abs(b - c) >= deadband)) ssc++;
     }
 
     const mean = sumAbs === 0 ? 0 : signal.reduce((s, v) => s + v, 0) / rows;

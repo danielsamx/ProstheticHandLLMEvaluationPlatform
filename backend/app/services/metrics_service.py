@@ -79,12 +79,16 @@ def compute_metrics(
     stages = set(report.stages_completed)
 
     metrics: dict[str, Any] = {
+        # A recoverable command at all. Kept under the old column names so a
+        # year of history stays queryable with one set of names.
         "is_valid_json": ValidationStage.PARSE in stages,
+        # The reply was the bare command line, with nothing wrapped around it.
+        # This is now the sharpest single measure of instruction adherence.
         "is_bare_json": ValidationStage.PARSE in stages
-        and not any(i.code == "JSON_REQUIRED_REPAIR" for i in report.issues),
-        "schema_compliant": ValidationStage.SCHEMA in stages,
-        "protocol_compliant": ValidationStage.PROTOCOL in stages
-        and ValidationStage.CONSISTENCY in stages,
+        and not any(i.code == "COMMAND_REQUIRED_REPAIR" for i in report.issues),
+        # No separate schema stage exists: a well-formed command *is* the shape.
+        "schema_compliant": ValidationStage.PROTOCOL in stages,
+        "protocol_compliant": ValidationStage.PROTOCOL in stages,
         "within_mechanical_limits": ValidationStage.RANGE in stages
         and ValidationStage.KINEMATIC in stages,
         "safety_compliant": ValidationStage.SAFETY in stages,
@@ -94,12 +98,18 @@ def compute_metrics(
         "detected_pattern": command.detected_pattern if command else None,
         "pose_mae": None,
         "pose_similarity": None,
-        "model_confidence": command.confidence if command else None,
+        # The model no longer reports a confidence, so there is nothing to
+        # calibrate. Recording a fabricated value would be worse than a null.
+        "model_confidence": None,
         "calibration_error": None,
         "actuators_commanded": len(command.commands) if command else 0,
         "intent": command.intent if command else None,
         "used_preset_gesture": bool(command and command.intent in ("gesture", "stop")),
-        "refused_to_act": bool(command and command.intent == "no_action"),
+        # "Refusing" is now a real command: `O` holds the hand open. It is the
+        # documented rest pose, so it is both a refusal and a safe action.
+        "refused_to_act": bool(
+            command and command.gesture == ControlCommand.OPEN.value
+        ),
         "latency_ms": call.latency_ms if call else None,
         "tokens_per_second": call.tokens_per_second if call else None,
         "cost_usd": call.cost_usd if call else 0.0,
@@ -109,6 +119,7 @@ def compute_metrics(
         "extra": {
             "dropped_params": call.dropped_params if call else [],
             "finish_reason": call.finish_reason if call else None,
+            "serial_command": report.normalised_serial,
             "mean_rms": round(window.total_activation, 4),
             "emg_source_mode": window.source_mode.value,
             "warning_codes": sorted({i.code for i in report.warnings}),
@@ -146,14 +157,12 @@ def compute_metrics(
             metrics["gesture_correct"] = False
         metrics["extra"]["expected_gesture_name"] = expected_name
 
-    # ── Confidence calibration ──────────────────────────────────────────────
-    if command is not None and metrics["gesture_correct"] is not None:
-        correctness = 1.0 if metrics["gesture_correct"] else 0.0
-        metrics["calibration_error"] = round(abs(command.confidence - correctness), 4)
-
     # ── Output efficiency ───────────────────────────────────────────────────
+    # Useful characters per completion token. With a two-character reply the
+    # ideal is close to 1; a model spending fifty tokens to say `C` is
+    # measurably wasteful, and this is where that shows.
     if call and call.completion_tokens:
-        useful = len(json.dumps(parsed_dict, separators=(",", ":"))) if parsed_dict else 0
+        useful = len(report.normalised_serial or "")
         metrics["output_token_efficiency"] = round(useful / call.completion_tokens, 4)
 
     return metrics

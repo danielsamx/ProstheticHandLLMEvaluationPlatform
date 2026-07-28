@@ -19,13 +19,26 @@ from app.domain.hand_spec import EMG_CHANNELS, EMG_CHANNEL_SITES, Handedness
 from app.schemas.emg import EmgWindow
 from app.services.emg_features import downsample
 
-DYNAMIC_TEMPLATE_VERSION: Final[str] = "2.0.0"
+#: 3.0.0 - the matrix carries raw converter output, so the block no longer
+#: claims a normalised amplitude range.
+DYNAMIC_TEMPLATE_VERSION: Final[str] = "3.0.0"
 DYNAMIC_TEMPLATE_NAME: Final[str] = "Raw 8-channel EMG matrix + derived features"
 
-#: Rows printed in full before the matrix is decimated. 256 x 8 at 3 decimals is
-#: roughly 4k tokens - enough signal for a model to work with, small enough to
-#: leave room for the frozen context in a 32k window.
-DEFAULT_MATRIX_MAX_ROWS: Final[int] = 256
+#: Rows printed before the matrix is decimated.
+#:
+#: Chosen so the default prompt fits an 8,192-token context, which is what LM
+#: Studio loads models with unless told otherwise — and therefore what most
+#: researchers will hit first.
+#:
+#: At 256 rows the matrix alone cost roughly 6,700 tokens and overflowed that
+#: context before the frozen blocks were added. 32 rows preserves the envelope
+#: and the onset shape, which is what the decision turns on, and a 3B model
+#: cannot use finer temporal detail anyway. The feature table is computed from
+#: the complete window regardless, so nothing quantitative is lost by decimating
+#: the printed excerpt.
+#:
+#: Raise it (with the runtime's context length) when the model can take it.
+DEFAULT_MATRIX_MAX_ROWS: Final[int] = 32
 DEFAULT_MATRIX_PRECISION: Final[int] = 3
 
 DEFAULT_DYNAMIC_TEMPLATE: Final[str] = """\
@@ -39,7 +52,7 @@ Acquisition: {source_mode} | {sample_count} samples @ {sample_rate_hz} Hz | {win
 
 Layout: {matrix_rows} rows x {channel_count} columns.
 Row = one time step (ascending). Column order = {channel_order}.
-Amplitudes are normalised to [-1.0, 1.0].{decimation_note}
+Values are raw converter output, unscaled.{decimation_note}
 
 {matrix_block}
 
@@ -47,8 +60,8 @@ Amplitudes are normalised to [-1.0, 1.0].{decimation_note}
 
 {feature_block}
 
-Aggregate activation (mean RMS): {mean_rms:.4f}
-Flexor group CH1-CH4: {flexor:.4f} | Extensor group CH5-CH7: {extensor:.4f}
+Mean RMS {mean_rms:.2f} | flexor CH1-CH4 {flexor:.2f} | extensor CH5-CH7 {extensor:.2f}
+flexor_ratio {flexor_ratio:.3f}  (>0.65 closing · <0.35 opening · ~0.5 rest or co-contraction)
 {extra_block}
 Generate the prosthetic hand movement.
 """
@@ -84,8 +97,14 @@ def render_matrix_block(
     return "\n".join(lines), len(rows), factor
 
 
-def render_feature_block(window: EmgWindow, *, include_sites: bool = True) -> str:
-    """Per-channel descriptor table."""
+def render_feature_block(window: EmgWindow, *, include_sites: bool = False) -> str:
+    """Per-channel descriptor table.
+
+    Site names are off by default: the technical context already maps every
+    channel to its electrode, and that block is frozen and present in every
+    prompt. Repeating the mapping on each of eight rows, on every run, spent
+    budget restating something the model was told once already.
+    """
     header = (
         "| CH  |    RMS |    MAV |  ZC |  SSC |     WL |    min |    max |"
         + (" Site" if include_sites else "")
@@ -116,7 +135,7 @@ def render_dynamic_prompt(
     subject_notes: str | None = None,
     extra_parameters: dict[str, Any] | None = None,
     template: str | None = None,
-    include_sites: bool = True,
+    include_sites: bool = False,
     matrix_max_rows: int = DEFAULT_MATRIX_MAX_ROWS,
     matrix_precision: int = DEFAULT_MATRIX_PRECISION,
 ) -> str:
@@ -170,5 +189,6 @@ def render_dynamic_prompt(
         mean_rms=window.total_activation,
         flexor=window.flexor_activation,
         extensor=window.extensor_activation,
+        flexor_ratio=window.flexor_ratio,
         extra_block=extra_block,
     )

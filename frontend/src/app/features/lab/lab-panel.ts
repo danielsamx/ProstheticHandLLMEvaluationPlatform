@@ -1,12 +1,15 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { RouterLink } from '@angular/router';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { LabStore } from '@core/services/lab.store';
-import { HistoryPanel } from '@features/history/history-panel';
+import { SaveDialog, SaveDialogData, SaveSummaryRow } from '@shared/save-dialog';
+import { firstValueFrom } from 'rxjs';
 import { EmgPanel } from './emg-panel';
 import { ModelConfig } from './model-config';
 import { PromptBlocks } from './prompt-blocks';
@@ -19,7 +22,7 @@ import { ResultPanel } from './result-panel';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     MatButtonModule, MatExpansionModule, MatIconModule, MatProgressBarModule,
-    MatTooltipModule, EmgPanel, HistoryPanel, ModelConfig, PromptBlocks, ResultPanel,
+    MatTooltipModule, RouterLink, EmgPanel, ModelConfig, PromptBlocks, ResultPanel,
   ],
   template: `
     <div class="flex h-full flex-col">
@@ -79,26 +82,25 @@ import { ResultPanel } from './result-panel';
             <ph-result-panel />
           </mat-expansion-panel>
 
-          <mat-expansion-panel>
-            <mat-expansion-panel-header>
-              <mat-panel-title class="!text-xs !font-semibold">
-                <mat-icon class="!mr-2 !h-4 !w-4 !text-[16px] text-pink">history</mat-icon>
-                Configurations &amp; execution history
-              </mat-panel-title>
-            </mat-expansion-panel-header>
-            <ph-history-panel />
-          </mat-expansion-panel>
         </mat-accordion>
       </div>
 
       <!-- ── Run bar ─────────────────────────────────────────────────────── -->
       <footer class="shrink-0 border-t border-ink-200 bg-ink-50 p-3">
+        @if (store.blockingReason(); as reason) {
+          <div class="mb-2 flex items-start gap-2 rounded border border-amber bg-amber/10 px-3 py-2 text-[11px] text-navy">
+            <mat-icon class="!h-4 !w-4 !text-[16px]">info</mat-icon>
+            <span>{{ reason }}</span>
+          </div>
+        }
+
         <div class="flex items-center gap-3">
           <button
             mat-flat-button
             color="primary"
             class="!h-11 !flex-1 !text-sm !font-semibold"
             [disabled]="!store.canRun()"
+            [matTooltip]="store.blockingReason() ?? 'Run one independent experiment'"
             (click)="store.runEvaluation()"
           >
             <mat-icon>play_arrow</mat-icon>
@@ -108,11 +110,12 @@ import { ResultPanel } from './result-panel';
             }
           </button>
 
-          <button mat-stroked-button class="!h-10"
-                  matTooltip="Save the current model and decoding parameters for reuse."
+          <button mat-stroked-button class="!h-11 !px-4"
+                  matTooltip="Save this exact model and parameter set so you can apply it to every model in a comparison"
                   [disabled]="!store.selectedModelId()"
                   (click)="saveConfiguration()">
             <mat-icon>bookmark_add</mat-icon>
+            <span class="ml-1 hidden text-[12px] font-semibold lg:inline">Save setup</span>
           </button>
         </div>
 
@@ -120,11 +123,11 @@ import { ResultPanel } from './result-panel';
           <span>
             Each run is an independent experiment &mdash; no conversation, no memory.
           </span>
-          @if (store.successRate(); as rate) {
-            <span class="lab-mono">
-              session pass rate {{ (rate * 100).toFixed(0) }}%
-            </span>
-          }
+          <a routerLink="/dashboard"
+             class="flex items-center gap-1 font-semibold text-ink-500 hover:text-pink">
+            <mat-icon class="!h-3.5 !w-3.5 !text-[14px]">insights</mat-icon>
+            View the record
+          </a>
         </div>
       </footer>
     </div>
@@ -132,13 +135,66 @@ import { ResultPanel } from './result-panel';
 })
 export class LabPanel {
   protected readonly store = inject(LabStore);
+  private readonly dialog = inject(MatDialog);
 
+  /**
+   * Save the current setup under a name.
+   *
+   * The dialog lists the parameters it is about to capture. A saved
+   * configuration the researcher cannot verify is one they will not trust when
+   * they come back to replay a comparison — which defeats the point of saving
+   * it at all.
+   */
   protected async saveConfiguration(): Promise<void> {
     const model = this.store.selectedModel();
-    const suggestion = model
-      ? `${model.display_name} @ T=${this.store.temperature()}`
-      : 'New configuration';
-    const name = prompt('Name this configuration:', suggestion);
-    if (name) await this.store.saveConfiguration(name);
+
+    const result = await firstValueFrom(
+      this.dialog
+        .open(SaveDialog, {
+          width: '440px',
+          autoFocus: 'input',
+          data: {
+            title: 'Save this configuration',
+            hint: 'Apply the same saved setup to every model in a comparison — '
+                + 'that is what keeps the comparison controlled.',
+            name: model
+              ? `${model.display_name} · T=${this.store.temperature()}`
+              : 'New configuration',
+            offerFavorite: true,
+            confirmLabel: 'Save configuration',
+            summary: this.configurationSummary(),
+          } satisfies SaveDialogData,
+        })
+        .afterClosed(),
+    );
+
+    if (result) {
+      await this.store.saveConfiguration(result.name, {
+        description: result.description,
+        isFavorite: result.isFavorite,
+      });
+    }
+  }
+
+  private configurationSummary(): SaveSummaryRow[] {
+    const model = this.store.selectedModel();
+    const rows: SaveSummaryRow[] = [
+      { label: 'Model', value: model?.display_name ?? '—' },
+      { label: 'Temperature', value: this.store.temperature().toFixed(2) },
+      { label: 'Top-P', value: this.store.topP().toFixed(2) },
+      { label: 'Max tokens', value: String(this.store.maxTokens()) },
+      { label: 'Seed', value: this.store.seed() === null ? 'random' : String(this.store.seed()) },
+      { label: 'Response format', value: this.store.responseFormat() },
+    ];
+    if (this.store.topK() !== null) {
+      rows.splice(3, 0, { label: 'Top-K', value: String(this.store.topK()) });
+    }
+    if (this.store.frequencyPenalty() !== 0 || this.store.presencePenalty() !== 0) {
+      rows.push({
+        label: 'Penalties',
+        value: `freq ${this.store.frequencyPenalty()} · pres ${this.store.presencePenalty()}`,
+      });
+    }
+    return rows;
   }
 }

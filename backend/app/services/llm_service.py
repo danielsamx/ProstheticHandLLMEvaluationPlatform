@@ -52,12 +52,16 @@ class LlmCallError(RuntimeError):
         status_code: int | None = None,
         provider_code: str | None = None,
         retryable: bool = False,
+        hint: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.status_code = status_code
         self.provider_code = provider_code
         self.retryable = retryable
+        #: A plain-language explanation when the cause is recognisable. The raw
+        #: provider message is often accurate but unhelpful.
+        self.hint = hint
 
 
 @dataclass(slots=True)
@@ -76,6 +80,11 @@ class LlmCallResult:
     tokens_per_second: float | None = None
     dropped_params: list[str] = field(default_factory=list)
     raw_usage: dict[str, Any] = field(default_factory=dict)
+    #: The structured-output mode actually sent, which may differ from the one
+    #: requested: `json_object` is upgraded to `json_schema` for runtimes that
+    #: reject it, and either can be downgraded to `text` on refusal.
+    effective_response_format: str = "text"
+    format_downgraded: bool = False
 
 
 def build_model_string(litellm_prefix: str, model_key: str) -> str:
@@ -85,19 +94,49 @@ def build_model_string(litellm_prefix: str, model_key: str) -> str:
     return f"{prefix}/{key}" if prefix else key
 
 
-def _response_format(mode: str, json_schema: dict | None) -> dict | None:
+#: Runtimes whose OpenAI-compatible layer does not implement `json_object`.
+#: LM Studio answers such a request with:
+#:     'response_format.type' must be 'json_schema' or 'text'
+#: This is a property of the runtime, not of a deployment, so it belongs in code
+#: rather than in configuration.
+_NO_JSON_OBJECT_PREFIXES: frozenset[str] = frozenset({"lm_studio"})
+
+
+def resolve_response_format(
+    mode: str, json_schema: dict | None, litellm_prefix: str
+) -> tuple[dict | None, str]:
+    """Pick the structured-output request the runtime will actually accept.
+
+    Returns ``(payload, effective_mode)``.
+
+    `json_object` is the OpenAI spelling and the natural default, but LM Studio
+    rejects it outright. Since the exact output schema is already known, the
+    request is *upgraded* to `json_schema` rather than downgraded to free text:
+    strict structured output constrains the model to the contract instead of
+    merely asking for valid JSON, which is strictly better for this task.
+    """
+    prefix = (litellm_prefix or "").strip().strip("/")
+
+    if mode == "json_object" and prefix in _NO_JSON_OBJECT_PREFIXES:
+        mode = "json_schema" if json_schema else "text"
+
     if mode == "json_object":
-        return {"type": "json_object"}
+        return {"type": "json_object"}, mode
+
     if mode == "json_schema" and json_schema:
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "prosthetic_command",
-                "strict": True,
-                "schema": json_schema,
+        return (
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "prosthetic_command",
+                    "strict": True,
+                    "schema": json_schema,
+                },
             },
-        }
-    return None
+            mode,
+        )
+
+    return None, "text"
 
 
 async def call_llm(
@@ -143,27 +182,44 @@ async def call_llm(
         # LM Studio / Ollama accept any non-empty key; LiteLLM requires one.
         kwargs["api_key"] = settings.lm_studio_api_key
 
-    fmt = _response_format(response_format_mode, json_schema)
+    fmt, effective_format = resolve_response_format(
+        response_format_mode, json_schema, litellm_prefix
+    )
     if fmt is not None:
         kwargs["response_format"] = fmt
 
     requested = {k for k in _FRAGILE_PARAMS if k in sampling}
+    format_downgraded = False
     started = time.perf_counter()
 
+    async def _attempt() -> Any:
+        return await acompletion(**kwargs)
+
     try:
-        response = await acompletion(**kwargs)
-    except asyncio.TimeoutError as exc:
-        raise LlmCallError(
-            f"Request to {model} timed out.", error_type="Timeout", retryable=True
-        ) from exc
-    except Exception as exc:  # LiteLLM normalises provider exceptions
-        raise LlmCallError(
-            f"{type(exc).__name__}: {exc}",
-            error_type=type(exc).__name__,
-            status_code=getattr(exc, "status_code", None),
-            provider_code=str(getattr(exc, "code", "") or "") or None,
-            retryable=_is_retryable(exc),
-        ) from exc
+        response = await _attempt()
+    except Exception as exc:
+        # One retry, and only for a refused structured-output request.
+        #
+        # Structured output is a capability declaration, and declarations are
+        # sometimes wrong — a quantised build may not carry the grammar its
+        # catalogue entry claims. Retrying as free text keeps the experiment
+        # alive; the validator checks the JSON either way, and the downgrade is
+        # recorded so the run is not silently different.
+        #
+        # Every other failure, and a failed retry, is wrapped below. Re-raising
+        # raw here was a real defect: it bypassed the wrapping handlers entirely
+        # and turned an ordinary provider rejection into an unhandled 500.
+        retryable_format = fmt is not None and _is_format_rejection(exc)
+        if retryable_format:
+            kwargs.pop("response_format", None)
+            try:
+                response = await _attempt()
+                effective_format = "text"
+                format_downgraded = True
+            except Exception as retry_exc:
+                raise _wrap(retry_exc, model, is_local, sampling) from retry_exc
+        else:
+            raise _wrap(exc, model, is_local, sampling) from exc
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -209,6 +265,8 @@ async def call_llm(
         tokens_per_second=tps,
         dropped_params=dropped,
         raw_usage=_usage_dict(usage),
+        effective_response_format=effective_format,
+        format_downgraded=format_downgraded,
     )
 
 
@@ -237,6 +295,100 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
         k: v for k, v in vars(usage).items()
         if not k.startswith("_") and isinstance(v, (int, float, str))
     }
+
+
+def _wrap(
+    exc: Exception, model: str, is_local: bool, sampling: dict[str, Any]
+) -> LlmCallError:
+    """Normalise any provider failure into the platform's own error type.
+
+    Everything that leaves this module must be an :class:`LlmCallError`, because
+    that is what the orchestrator catches to record a `provider_error` execution.
+    An escaping raw exception becomes an unhandled 500 and loses the run.
+    """
+    if isinstance(exc, asyncio.TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return LlmCallError(
+            f"{type(exc).__name__}: {exc}",
+            error_type="Timeout",
+            retryable=True,
+            hint=(
+                "The runtime did not answer in time. On a local model this is "
+                "usually prompt processing rather than a fault: a small model on "
+                "CPU can spend a minute or more before emitting its first token. "
+                "Check LM Studio's log for 'Prompt processing progress' — if it "
+                "is advancing, the model is working and the timeout is simply "
+                "too short. Enabling GPU offload is the largest single "
+                "improvement; shortening the EMG window is the next."
+            ),
+        )
+    return LlmCallError(
+        f"{type(exc).__name__}: {exc}",
+        error_type=type(exc).__name__,
+        status_code=getattr(exc, "status_code", None),
+        provider_code=str(getattr(exc, "code", "") or "") or None,
+        retryable=_is_retryable(exc),
+        hint=diagnose(exc, model=model, is_local=is_local, sampling=sampling),
+    )
+
+
+def _is_format_rejection(exc: Exception) -> bool:
+    """Did the runtime refuse the structured-output request specifically?"""
+    text = str(exc).lower()
+    return "response_format" in text or "json_schema" in text or "json_object" in text
+
+
+def diagnose(
+    exc: Exception,
+    *,
+    model: str,
+    is_local: bool,
+    sampling: dict[str, Any],
+) -> str | None:
+    """Translate a provider rejection into something the researcher can act on.
+
+    A bare ``BadRequestError`` is accurate and useless. These are the causes
+    that actually come up with local runtimes, and each one has a different fix.
+    """
+    text = str(exc).lower()
+
+    if "context" in text and ("length" in text or "window" in text or "exceed" in text):
+        return (
+            "The prompt is longer than the context window the model was loaded "
+            "with. The technical context block alone is around 3,500 tokens and "
+            "the EMG matrix adds more. In LM Studio, raise the context length on "
+            "the loaded model, or shorten the window (fewer EMG rows)."
+        )
+
+    if "response_format" in text or "json_object" in text or "json_schema" in text:
+        return (
+            "The runtime rejected the structured-output request. Set Response "
+            "format to 'text' for this model, or load a build that supports "
+            "JSON mode. The validator still checks the JSON either way."
+        )
+
+    if "does not exist" in text or "not found" in text or "no model" in text:
+        return (
+            f"The runtime does not recognise '{model.split('/', 1)[-1]}'. It may "
+            "have been unloaded since it was imported — press 'Import loaded "
+            "models' to refresh the catalogue."
+        )
+
+    if "grammar" in text or "unsupported" in text:
+        dropped = [k for k in ("top_k", "seed", "frequency_penalty", "presence_penalty")
+                   if k in sampling]
+        if dropped:
+            return (
+                "The runtime rejected a sampling parameter. Try clearing "
+                f"{', '.join(dropped)} for this model."
+            )
+
+    if is_local and ("connection" in text or "refused" in text):
+        return (
+            "The local runtime stopped responding mid-request. Check that the "
+            "model is still loaded and that LM Studio's server is running."
+        )
+
+    return None
 
 
 def _is_retryable(exc: Exception) -> bool:

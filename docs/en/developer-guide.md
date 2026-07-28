@@ -173,6 +173,44 @@ the HTTP boundary. `ChangeDetectionStrategy.OnPush` everywhere.
 The `LabStore` holds no conversation state, and must not acquire any. An
 execution is a pure function of `(configuration, frozen prompts, EMG window)`.
 
+### Creating ORM objects in an async session
+
+Objects **loaded** by a query are safe: their eager loaders ran. Objects
+**created** in the session are not. `session.flush()` makes them persistent, and
+their relationships become *unloaded* rather than empty — so the next access
+emits a lazy SELECT outside the greenlet and raises `MissingGreenlet`.
+
+Two ordinary-looking operations trip it:
+
+```python
+execution.logs.append(entry)          # appending reads the collection first
+ExecutionOut.model_validate(execution)  # Pydantic reads every mapped attribute
+```
+
+Call `prime` right after the flush:
+
+```python
+from app.db.relationships import prime
+
+session.add(execution)
+await session.flush()
+prime(execution)          # every relationship is now loaded-and-empty
+```
+
+`prime` uses `set_committed_value`, which records the value as though it had been
+loaded — bypassing both the loader and the cascade machinery. A plain
+`obj.rel = None` is not equivalent: it works for scalars but not for
+collections, and for a `delete-orphan` relationship it still consults the old
+value.
+
+`unloaded(instance)` returns the relationship names that would still trigger a
+load, which is the fastest way to diagnose a `MissingGreenlet`.
+
+Related: never use a SQL-side `onupdate` (`func.now()`). The server computes the
+value during UPDATE, SQLAlchemy cannot see it, so it expires the attribute and
+defers a refresh — which then fires during response serialisation and fails the
+same way. `TimestampMixin` uses a Python callable for exactly this reason.
+
 ### Migrations
 
 Every schema change gets a migration with a working `downgrade()`. If data cannot

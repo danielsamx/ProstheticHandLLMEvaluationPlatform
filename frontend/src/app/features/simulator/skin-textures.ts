@@ -90,7 +90,14 @@ export function sharedNailMaterial(): THREE.MeshPhysicalMaterial {
   return cachedNail;
 }
 
-/** Release the shared set. Only the component teardown should call this. */
+/**
+ * Release the shared set.
+ *
+ * Not called on component teardown: routing between views destroys and
+ * recreates the simulator, and regenerating three 1024x1024 noise buffers on
+ * every visit would cost about a second each time. Kept for a genuine
+ * application shutdown or a test that needs a clean slate.
+ */
 export function disposeSharedSkin(): void {
   cachedSkin?.dispose();
   cachedNail?.dispose();
@@ -194,12 +201,17 @@ function createRoughness(): THREE.Texture {
 /**
  * Physically-based skin.
  *
- * Three effects stacked, in order of how much they contribute:
- *  - `sheen` gives the soft velvet falloff at grazing angles that separates
- *    skin from plastic more than any texture does;
- *  - `transmission` plus a warm `attenuationColor` fakes subsurface scattering,
- *    so light bleeds red through the thin tissue at the finger edges;
- *  - `clearcoat` stands in for the oily epidermal layer.
+ * `sheen` does most of the work: the soft falloff at grazing angles is what
+ * separates skin from plastic, more than any texture does. `clearcoat` stands
+ * in for the oily epidermal layer.
+ *
+ * `transmission` is deliberately **off**. It reads as subsurface scattering on
+ * a dark background, but Three.js renders transmissive materials in a separate
+ * pass that samples the opaque render target — and this scene has no opaque
+ * background, only a shadow catcher. Against the light theme the hand came out
+ * washed out to the point of near-invisibility on some drivers. An effect that
+ * can make the primary subject disappear is not worth the marginal realism; the
+ * warm `sheenColor` carries the same impression safely.
  */
 export function createSkinMaterial(textures: SkinTextures): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
@@ -207,19 +219,19 @@ export function createSkinMaterial(textures: SkinTextures): THREE.MeshPhysicalMa
     normalMap: textures.normalMap,
     normalScale: new THREE.Vector2(0.62, 0.62),
     roughnessMap: textures.roughnessMap,
-    roughness: 0.58,
+    roughness: 0.56,
     metalness: 0.0,
-    clearcoat: 0.20,
+    clearcoat: 0.22,
     clearcoatRoughness: 0.55,
-    sheen: 0.55,
-    sheenRoughness: 0.62,
-    sheenColor: new THREE.Color(0xffd2be),
-    transmission: 0.075,
-    thickness: 0.42,
-    attenuationColor: new THREE.Color(0xc4574a),
-    attenuationDistance: 0.55,
+    sheen: 0.7,
+    sheenRoughness: 0.6,
+    sheenColor: new THREE.Color(0xffc9b0),
+    transmission: 0,
     ior: 1.4,
-    flatShading: false,
+    side: THREE.FrontSide,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true,
   });
 }
 
@@ -231,8 +243,11 @@ export function createNailMaterial(): THREE.MeshPhysicalMaterial {
     metalness: 0.0,
     clearcoat: 0.9,
     clearcoatRoughness: 0.08,
-    transmission: 0.12,
-    thickness: 0.05,
+    // Opaque for the same reason as the skin: a transmissive nail depends on
+    // the transmission pass, which has nothing to sample in this scene.
+    transmission: 0,
     ior: 1.5,
+    transparent: false,
+    opacity: 1,
   });
 }

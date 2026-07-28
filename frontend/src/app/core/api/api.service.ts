@@ -3,15 +3,11 @@ import { Injectable, inject } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
 
 import { environment } from '@env/environment';
-import {
-  EmgMatrixFormat,
-  EmgWindow,
-  MatrixParseResponse,
-  NormalisationMode,
-} from '../models/emg.model';
+import { EmgMatrixFormat, EmgWindow, MatrixParseResponse } from '../models/emg.model';
 import { HandSpec, Handedness, LimitProfileId } from '../models/hand.model';
 import {
   Execution,
+  ExecutionStats,
   LabPreset,
   LlmModel,
   LmStudioProbe,
@@ -22,6 +18,15 @@ import {
   SamplingConfiguration,
 } from '../models/llm.model';
 
+/** `/health` also reports whether the schema matches the models. */
+export interface HealthReport {
+  reachable: boolean;
+  status?: string;
+  version?: string;
+  env?: string;
+  schema?: { ok: boolean | null; revision: string | null; detail: string | null };
+}
+
 export interface RunExecutionPayload {
   sampling_configuration_id: string;
   window: EmgWindow;
@@ -31,6 +36,7 @@ export interface RunExecutionPayload {
   dynamic_prompt_template_id?: string | null;
   system_prompt_override?: string | null;
   technical_context_override?: string | null;
+  dynamic_template_override?: string | null;
   limit_profile?: LimitProfileId | null;
   experiment_id?: string | null;
   experiment_type?: string;
@@ -53,13 +59,13 @@ export class ApiService {
    * Deliberately not one of the data endpoints: this answers "is anything
    * there at all", which is a different question from "did this query work".
    */
-  async ping(): Promise<boolean> {
+  async ping(): Promise<HealthReport> {
     const root = this.base.replace(/\/api\/v1\/?$/, '');
     try {
-      await firstValueFrom(this.http.get(`${root}/health`));
-      return true;
+      const body = await firstValueFrom(this.http.get<HealthReport>(`${root}/health`));
+      return { ...body, reachable: true };
     } catch {
-      return false;
+      return { reachable: false };
     }
   }
 
@@ -153,6 +159,12 @@ export class ApiService {
     return this.http.get<PromptVersion[]>(`${this.base}/prompts/dynamic-templates`);
   }
 
+  createDynamicTemplate(body: {
+    name: string; version: string; content: string; description?: string; activate: boolean;
+  }): Observable<PromptVersion> {
+    return this.http.post<PromptVersion>(`${this.base}/prompts/dynamic-templates`, body);
+  }
+
   previewPrompt(body: Record<string, unknown>): Observable<PromptPreview> {
     return this.http.post<PromptPreview>(`${this.base}/prompts/preview`, body);
   }
@@ -184,8 +196,6 @@ export class ApiService {
   parseMatrix(body: {
     text: string;
     sample_rate_hz: number;
-    normalisation: NormalisationMode;
-    full_scale?: number | null;
     ground_truth_gesture?: string | null;
   }): Observable<MatrixParseResponse> {
     return this.http.post<MatrixParseResponse>(`${this.base}/emg/parse`, body);
@@ -194,6 +204,19 @@ export class ApiService {
   // ── Executions ────────────────────────────────────────────────────────────
   runExecution(payload: RunExecutionPayload): Observable<RunExecutionResult> {
     return this.http.post<RunExecutionResult>(`${this.base}/executions/run`, payload);
+  }
+
+  executionStats(since?: string): Observable<ExecutionStats> {
+    let params = new HttpParams();
+    if (since) params = params.set('since', since);
+    return this.http.get<ExecutionStats>(`${this.base}/executions/stats`, { params });
+  }
+
+  /** Streamed straight from the API so the file matches it byte for byte. */
+  exportExecutionsCsv(body: { since?: string; project_id?: string }): Observable<Blob> {
+    return this.http.post(`${this.base}/export/executions.csv`, body, {
+      responseType: 'blob',
+    });
   }
 
   listExecutions(limit = 50): Observable<Execution[]> {

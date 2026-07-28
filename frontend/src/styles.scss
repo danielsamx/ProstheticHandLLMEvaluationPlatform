@@ -103,11 +103,61 @@ body {
 }
 
 // ─── Material density and surface tweaks ─────────────────────────────────────
-// The left panel packs a lot of controls into half a screen, so the default
-// Material spacing is tightened rather than letting the panel scroll forever.
+// The left panel packs a lot of controls into half a screen, so Material's
+// default spacing is tightened rather than letting the panel scroll forever.
+// The controls are set once here instead of per-component so every field,
+// select and textarea stays visually consistent.
 .mat-mdc-form-field { width: 100%; }
 .mat-mdc-form-field-subscript-wrapper { display: none; }
-.dense-field .mat-mdc-text-field-wrapper { background: #ffffff; }
+
+.dense-field {
+  // Material's minimum touch target is 40px; on a desktop research tool with
+  // this many parameters, that costs more vertical space than it earns.
+  --mat-form-field-container-height: 34px;
+  --mat-form-field-container-vertical-padding: 6px;
+  --mat-form-field-filled-with-label-container-padding-top: 6px;
+  --mat-form-field-filled-with-label-container-padding-bottom: 6px;
+
+  .mat-mdc-text-field-wrapper { background: #ffffff; }
+
+  .mat-mdc-form-field-infix {
+    min-height: 34px;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+  }
+
+  input.mat-mdc-input-element,
+  textarea.mat-mdc-input-element,
+  .mat-mdc-select-value-text {
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  .mat-mdc-select-arrow-wrapper { transform: translateY(-1px); }
+  .mat-mdc-form-field-icon-suffix { padding: 0 6px; }
+}
+
+// Dropdown panels follow the trigger: a 12px field opening a 16px list reads
+// as two different controls.
+.mat-mdc-select-panel .mat-mdc-option {
+  min-height: 32px;
+  font-size: 12px;
+}
+.mat-mdc-optgroup-label {
+  min-height: 28px !important;
+  font-size: 11px !important;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #4a657d !important;
+}
+
+// Slide toggles sit inline with these fields and were visually heavier.
+.mat-mdc-slide-toggle { --mdc-switch-state-layer-size: 34px; }
+
+// Buttons in the dense panels.
+.mat-mdc-outlined-button:not(:disabled),
+.mat-mdc-unelevated-button:not(:disabled) { letter-spacing: 0; }
 
 .mat-expansion-panel {
   background: #ffffff !important;
@@ -121,3 +171,14 @@ body {
 .mat-expansion-panel-body { padding: 0 16px 16px !important; }
 
 .mat-mdc-slider { --mdc-slider-handle-color: #D81B60; }
+
+// ─── Dialogs ─────────────────────────────────────────────────────────────────
+// mat.theme emits the overlay tokens, but the surface colour has to be pinned
+// explicitly or the panel inherits the page background and loses its edge.
+.mat-mdc-dialog-surface {
+  background: #ffffff !important;
+  border-radius: 12px !important;
+  border: 1px solid #d6dee6;
+}
+.mat-mdc-dialog-title { color: #001f3f; }
+.cdk-overlay-dark-backdrop { background: rgba(0, 31, 63, 0.32); }

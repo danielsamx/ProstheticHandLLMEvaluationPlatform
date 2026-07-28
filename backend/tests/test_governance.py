@@ -232,3 +232,111 @@ def test_project_slug_rejects_punctuation():
 
 def test_project_slug_is_optional():
     assert ProjectIn(name="Grasp comparison").slug is None
+
+
+# ── Model catalogue honesty ─────────────────────────────────────────────────
+
+
+def _seed_source() -> str:
+    """Read the seed as text.
+
+    Importing it would open a database engine, which the suite deliberately does
+    not require — these checks are about what the seed *declares*, not what it
+    does at runtime.
+    """
+    import pathlib as _p
+
+    return (_p.Path(__file__).resolve().parent.parent / "app" / "seeds" / "seed.py").read_text()
+
+
+def test_seed_ships_no_invented_local_models() -> None:
+    """A dropdown offering a model the researcher never downloaded is worse than
+    an empty one: it fails at inference with a provider error that looks like a
+    connectivity problem. What is installed is knowable, so guessing is both
+    unnecessary and misleading."""
+    import ast
+
+    tree = ast.parse(_seed_source())
+    models = next(
+        node for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and getattr(node.target, "id", "") == "MODELS"
+    )
+    assert ast.literal_eval(models.value) == []
+
+
+def test_placeholder_cleanup_preserves_referenced_models() -> None:
+    """Traceability: a past result must still resolve to the model it ran
+    against, so a referenced row is never deleted."""
+    source = _seed_source()
+
+    assert "_remove_unused_placeholders" in source
+    assert "Execution.llm_model_id == model.id" in source
+    assert "placeholder_kept" in source, "referenced placeholders must be kept"
+
+
+def test_availability_is_distinct_from_enabled() -> None:
+    """`is_available` answers 'can this run now', which is a different question
+    from whether the catalogue entry is enabled — and both differ from 'the
+    runtime was unreachable', which must stay unknown rather than false."""
+    from app.schemas.api import ModelOut
+
+    assert "is_available" in ModelOut.model_fields
+    assert ModelOut.model_fields["is_available"].default is None
+
+
+def test_only_lm_studio_ships_enabled() -> None:
+    """An unselectable provider in a dropdown is clutter; a provider with no API
+    key configured is worse, because it fails at inference time. The other rows
+    are retained so enabling one is a flag flip rather than a migration."""
+    import re
+
+    source = _seed_source()
+    block = source[source.index("PROVIDERS = ["):source.index("#: The catalogue ships EMPTY")]
+
+    enabled: dict[str, bool] = {}
+    for slug in re.findall(r'"slug": "(\w+)"', block):
+        entry = block[block.index(f'"slug": "{slug}"'):]
+        entry = entry[: entry.index("},")]
+        enabled[slug] = '"is_enabled": False' not in entry
+
+    assert enabled == {
+        "lm_studio": True,
+        "ollama": False,
+        "openai": False,
+        "anthropic": False,
+    }
+
+
+def test_provider_enablement_self_heals_on_reseed() -> None:
+    """An existing database keeps its old rows; the seed must correct them
+    rather than only apply to a fresh install."""
+    source = _seed_source()
+    assert "updated_provider_enabled" in source
+    assert "row.is_enabled = desired" in source
+
+
+def test_importing_a_model_also_creates_a_way_to_run_it() -> None:
+    """A catalogue entry with no sampling configuration cannot be executed, and
+    the Run button is disabled with nothing on screen to explain it.
+
+    This was the gap left by emptying the seeded model list: the seed created
+    configurations only for seeded models, and the import created none at all.
+    """
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "app" / "api" / "v1" / "providers.py"
+    ).read_text()
+
+    assert "SamplingConfiguration(" in source, "import creates no configuration"
+    assert "temperature=0.0" in source, "the baseline must be the control condition"
+    assert "seed=42" in source
+
+
+def test_the_seed_backfills_models_left_without_a_configuration() -> None:
+    """Existing installs imported models before the import created one."""
+    source = _seed_source()
+    assert "_backfill_missing_configurations" in source
+    assert "backfilled_configuration" in source

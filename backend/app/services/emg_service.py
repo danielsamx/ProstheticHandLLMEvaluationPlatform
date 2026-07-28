@@ -12,20 +12,13 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.hand_spec import EMG_CHANNEL_COUNT, EMG_CHANNELS
-from app.services.emg_features import (
-    NormalisationError,
-    NormalisationMode,
-    NormalisationReport,
-    normalise_matrix,
-)
 from app.models.emg import EmgWindowRecord
 from app.schemas.emg import EmgSourceMode, EmgWindow
 
 DEFAULT_SYNTHETIC_SAMPLES: int = 200
 
 __all__ = [
-    "MatrixParseError", "NormalisationMode", "NormalisationReport",
-    "normalise_matrix", "parse_matrix_text", "matrix_to_csv",
+    "MatrixParseError", "MatrixError", "parse_matrix_text", "matrix_to_csv",
     "synthesise_window", "blank_window", "persist_window", "record_to_window",
     "window_checksum", "SYNTHETIC_GESTURES",
 ]
@@ -102,28 +95,36 @@ _NUMBER_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 #: A line made up entirely of identifier-like tokens and separators is a header.
 #: This has to be checked BEFORE extracting numbers: "CH1,CH2,...,CH8" would
 #: otherwise parse as the perfectly-shaped data row [1, 2, ..., 8].
-_HEADER_RE = re.compile(r'^[\s,;\t]*(?:"?[A-Za-z_][A-Za-z0-9_]*"?[\s,;\t]*)+$')
+#: `\ufeff` is included explicitly: it is a format character, not whitespace, so
+#: `\s` does not match it and a stray BOM mid-file would still break the match.
+_HEADER_RE = re.compile(r'^[\s,;\t\ufeff]*(?:"?[A-Za-z_][A-Za-z0-9_]*"?[\s,;\t]*)+$')
 
 
 class MatrixParseError(ValueError):
     """The pasted text could not be read as an N x 8 matrix."""
 
 
-#: Normalisation failures are a parse failure from the caller's point of view.
-MatrixError = (MatrixParseError, NormalisationError)
+#: Kept as a tuple so callers can widen it without touching every except clause.
+MatrixError = (MatrixParseError,)
 
 
 def parse_matrix_text(text: str) -> list[list[float]]:
     """Read an N x 8 matrix from CSV, TSV, whitespace or JSON text.
 
-    Values are returned in whatever units the file used; call
-    :func:`normalise_matrix` to map them onto [-1.0, 1.0].
+    Values are returned in whatever units the file used, unchanged. Nothing
+    between the electrode and the prompt rescales them.
 
     Deliberately permissive about delimiters and bracket noise, because the
     realistic input is a copy-paste out of MATLAB, NumPy or a spreadsheet - but
     strict about shape, because a silently transposed matrix would corrupt every
     downstream feature.
     """
+    # Strip a UTF-8 BOM before anything else. Excel and several acquisition
+    # tools write one, and it is invisible: the header line stops matching the
+    # label pattern, so `CH0,CH1,...,CH7` is read as the data row [0,1,...,7] and
+    # a bogus first sample enters the window silently.
+    text = text.lstrip("\ufeff")
+
     stripped = text.strip()
     if not stripped:
         raise MatrixParseError("No data supplied.")
@@ -195,18 +196,20 @@ def matrix_to_csv(matrix: list[list[float]], precision: int = 4) -> str:
 #: Target RMS per channel for each gesture, over CH1..CH8.
 #: CH1-CH4 volar/flexor, CH5-CH7 dorsal/extensor, CH8 brachioradialis.
 #: Values are RMS, not peak. Surface EMG has a crest factor around 3-4, so an
-#: RMS of 0.30 already puts occasional peaks near full scale - which is what a
-#: maximal contraction looks like on a normalised channel.
+#: RMS of 150 counts already puts occasional peaks near a 512-count full scale.
 _TEMPLATES: dict[str, tuple[float, ...]] = {
-    "rest":             (0.022, 0.018, 0.026, 0.022, 0.022, 0.018, 0.022, 0.028),
-    "hand_open":        (0.055, 0.050, 0.045, 0.055, 0.300, 0.275, 0.270, 0.120),
-    "power_grasp":      (0.330, 0.308, 0.319, 0.292, 0.055, 0.050, 0.060, 0.165),
-    "precision_pinch":  (0.215, 0.242, 0.116, 0.187, 0.099, 0.077, 0.072, 0.116),
-    "point":            (0.116, 0.110, 0.231, 0.138, 0.215, 0.116, 0.099, 0.110),
-    "thumbs_up":        (0.242, 0.138, 0.259, 0.226, 0.116, 0.171, 0.088, 0.138),
-    "ok_sign":          (0.187, 0.226, 0.099, 0.171, 0.132, 0.099, 0.088, 0.116),
-    "co_contraction":   (0.308, 0.297, 0.302, 0.286, 0.308, 0.291, 0.286, 0.231),
+    "rest":             (11, 9, 13, 11, 11, 9, 11, 14),
+    "hand_open":        (28, 26, 23, 28, 154, 141, 138, 61),
+    "power_grasp":      (169, 158, 163, 150, 28, 26, 31, 84),
+    "precision_pinch":  (110, 124, 59, 96, 51, 39, 37, 59),
+    "point":            (59, 56, 118, 71, 110, 59, 51, 56),
+    "thumbs_up":        (124, 71, 133, 116, 59, 88, 45, 71),
+    "ok_sign":          (96, 116, 51, 88, 68, 51, 45, 59),
+    "co_contraction":   (158, 152, 155, 146, 158, 149, 146, 118),
 }
+
+#: Where a 10-bit signed converter saturates.
+_SATURATION: float = 512.0
 
 SYNTHETIC_GESTURES: tuple[str, ...] = tuple(_TEMPLATES)
 
@@ -236,11 +239,11 @@ def _band_limited_noise(
     return band[:length]
 
 
-#: Amplitude above which the front end starts compressing rather than clipping.
+#: Fraction of full scale above which the front end compresses rather than clips.
 _LIMIT_KNEE: float = 0.85
 
 
-def _soft_limit(value: float) -> float:
+def _soft_limit(value: float, ceiling: float = _SATURATION) -> float:
     """Compress the tail instead of clipping it.
 
     A hard clip flattens every peak onto exactly +/-1.0, which destroys the
@@ -248,12 +251,13 @@ def _soft_limit(value: float) -> float:
     amplifiers compress smoothly into saturation, so the tail is folded with a
     tanh above the knee and left untouched below it.
     """
+    knee = _LIMIT_KNEE * ceiling
     magnitude = abs(value)
-    if magnitude <= _LIMIT_KNEE:
+    if magnitude <= knee:
         return value
     sign = 1.0 if value >= 0 else -1.0
-    excess = magnitude - _LIMIT_KNEE
-    return sign * (_LIMIT_KNEE + (1.0 - _LIMIT_KNEE) * math.tanh(excess / (1.0 - _LIMIT_KNEE)))
+    headroom = ceiling - knee
+    return sign * (knee + headroom * math.tanh((magnitude - knee) / headroom))
 
 
 def _scale_to_rms(signal: list[float], target_rms: float) -> list[float]:
@@ -292,7 +296,7 @@ def synthesise_window(
         # Multiplicative, not additive: an absolute jitter of 0.05 would swamp a
         # rest template whose channels sit at 0.02, and "rest" would stop being
         # distinguishable from light activity.
-        target = max(0.0, min(1.0, base * (1.0 + rng.gauss(0.0, noise))))
+        target = max(0.0, base * (1.0 + rng.gauss(0.0, noise)))
         raw = _band_limited_noise(samples, rng, sample_rate_hz)
         channels.append(_scale_to_rms(raw, target))
 
@@ -306,7 +310,8 @@ def synthesise_window(
         source_mode=EmgSourceMode.SYNTHETIC,
         sample_rate_hz=sample_rate_hz,
         ground_truth_gesture=key,
-        notes=f"Synthetic stimulus (seed={seed}, noise={noise}, {samples} samples).",
+        notes=f"Synthetic stimulus in converter counts "
+              f"(seed={seed}, noise={noise}, {samples} samples).",
     )
 
 

@@ -2,16 +2,16 @@ import { Component, ChangeDetectionStrategy, OnInit, inject, signal } from '@ang
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+
 import { LabStore } from '@core/services/lab.store';
 import { SimulatorBridgeService } from '@core/services/simulator-bridge.service';
-import { LabPanel } from '@features/lab/lab-panel';
-import { SimulatorPanel } from '@features/simulator/simulator-panel';
 
 @Component({
   selector: 'ph-root',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatIconModule, MatTooltipModule, LabPanel, SimulatorPanel],
+  imports: [MatIconModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet],
   template: `
     <div class="flex h-screen w-screen flex-col bg-white text-navy">
       <!--
@@ -40,12 +40,12 @@ import { SimulatorPanel } from '@features/simulator/simulator-panel';
               and the original resolution is what reaches the screen.
             -->
             <img
-              src="assets/logo.webp"
+              src="assets/logo.png"
               alt="Escuela Politécnica Nacional · Facultad de Ingeniería de Sistemas"
               width="250"
               height="96"
               decoding="async"
-              class="h-10 w-auto shrink-0 rounded-md bg-white p-1.5 shadow-sm
+              class="h-10 w-auto shrink-0 rounded-md bg-transparent shadow-sm
                      sm:h-14 sm:p-2 lg:h-16"
               (error)="logoAvailable.set(false)"
             />
@@ -65,11 +65,24 @@ import { SimulatorPanel } from '@features/simulator/simulator-panel';
         </div>
 
         <!--
-          Status chips. They wrap and reverse so the most operationally urgent
-          signal — whether LM Studio is reachable — stays visible when the row
-          runs out of room on a narrow screen.
+          Navigation and status share the right-hand column. The links carry
+          icons so they survive the narrow breakpoint, where the labels drop.
         -->
         <div class="flex flex-wrap items-center justify-end gap-1.5 text-[11px] sm:gap-2">
+          <nav class="mr-1 flex overflow-hidden rounded-full bg-white/10">
+            @for (link of navigation; track link.path) {
+              <a [routerLink]="link.path"
+                 routerLinkActive="!bg-white !text-navy"
+                 class="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white/80 transition-colors hover:text-white"
+                 [matTooltip]="link.tooltip">
+                <mat-icon class="!h-4 !w-4 !text-[16px]">{{ link.icon }}</mat-icon>
+                <span class="hidden lg:inline">{{ link.label }}</span>
+              </a>
+            }
+          </nav>
+
+          <span class="hidden h-5 w-px bg-white/20 sm:block"></span>
+
           @if (store.handSpec(); as spec) {
             <span class="lab-chip hidden bg-white/10 text-white lg:inline-flex"
                   matTooltip="Independently commanded degrees of freedom">
@@ -107,18 +120,8 @@ import { SimulatorPanel } from '@features/simulator/simulator-panel';
         </div>
       </header>
 
-      <!--
-        Split view. Exactly 50/50 side by side from the medium breakpoint up;
-        below that the panels stack, because half of a phone screen is too
-        narrow for either the parameter forms or a legible 3D viewport.
-      -->
-      <main class="grid min-h-0 flex-1 grid-cols-1 grid-rows-[1fr_1fr] md:grid-cols-2 md:grid-rows-1">
-        <section class="min-h-0 overflow-hidden border-b border-ink-200 md:border-b-0 md:border-r">
-          <ph-lab-panel />
-        </section>
-        <section class="min-h-0 overflow-hidden">
-          <ph-simulator-panel />
-        </section>
+      <main class="min-h-0 flex-1">
+        <router-outlet />
       </main>
     </div>
   `,
@@ -129,6 +132,21 @@ export class App implements OnInit {
 
   /** A broken-image glyph in the header reads worse than no logo at all. */
   protected readonly logoAvailable = signal(true);
+
+  protected readonly navigation = [
+    {
+      path: '/lab',
+      label: 'Laboratory',
+      icon: 'science',
+      tooltip: 'Configure and run one experiment',
+    },
+    {
+      path: '/dashboard',
+      label: 'Dashboard',
+      icon: 'insights',
+      tooltip: 'The accumulated experimental record',
+    },
+  ];
 
   ngOnInit(): void {
     void this.store.bootstrap();

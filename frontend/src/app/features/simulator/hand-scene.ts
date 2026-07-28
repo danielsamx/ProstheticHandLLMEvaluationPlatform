@@ -13,7 +13,7 @@
  *    the pose far easier to inspect.
  */
 
-import { signal } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -22,7 +22,6 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 
 import { HandSpec, Handedness, JointAngle, JointSpec } from '@core/models/hand.model';
 import { HandRig, Side, buildHandRig, captureRestPose } from './hand-rig';
-import { disposeSharedSkin } from './skin-textures';
 
 const DEG2RAD = Math.PI / 180;
 
@@ -39,6 +38,50 @@ export interface SceneStats {
   fps: number;
   triangles: number;
   animating: boolean;
+}
+
+/** Named camera positions offered by the viewport controls. */
+export type CameraView = 'default' | 'palm' | 'back' | 'side' | 'top';
+
+/**
+ * Why the viewport might be empty.
+ *
+ * A blank 3D panel is the least debuggable failure in the whole application:
+ * it looks identical whether WebGL is unavailable, the canvas has zero size,
+ * the hardware specification never arrived, or the context was lost. Reporting
+ * the reason turns "the hand is not showing" into something actionable.
+ */
+export interface SceneDiagnostics {
+  webglAvailable: boolean;
+  contextLost: boolean;
+  canvasWidth: number;
+  canvasHeight: number;
+  meshCount: number;
+  jointsBound: number;
+  specLoaded: boolean;
+  lastError: string | null;
+}
+
+/** Is WebGL usable at all in this browser? */
+function probeWebGL(): { ok: boolean; detail: string | null } {
+  try {
+    const canvas = document.createElement('canvas');
+    const context =
+      canvas.getContext('webgl2') ??
+      canvas.getContext('webgl') ??
+      canvas.getContext('experimental-webgl');
+    if (!context) {
+      return {
+        ok: false,
+        detail:
+          'This browser reports no WebGL context. Hardware acceleration may be ' +
+          'disabled, or the GPU driver is blocklisted. Check chrome://gpu.',
+      };
+    }
+    return { ok: true, detail: null };
+  } catch (error) {
+    return { ok: false, detail: `WebGL probe threw: ${(error as Error).message}` };
+  }
 }
 
 export class HandScene {
@@ -76,19 +119,55 @@ export class HandScene {
 
   /** Exposed as a signal so the zoneless template updates without polling. */
   readonly stats = signal<SceneStats>({ fps: 0, triangles: 0, animating: false });
+  /** Which preset the camera was last sent to; cleared when the user orbits. */
+  readonly activeView = signal<CameraView | null>('default');
+
+  /** Populated whenever the scene state changes, so the panel can explain itself. */
+  readonly diagnostics = signal<SceneDiagnostics>({
+    webglAvailable: true,
+    contextLost: false,
+    canvasWidth: 0,
+    canvasHeight: 0,
+    meshCount: 0,
+    jointsBound: 0,
+    specLoaded: false,
+    lastError: null,
+  });
+
+  /** True when there is something on screen to look at. */
+  readonly ready = computed(() => {
+    const d = this.diagnostics();
+    return d.webglAvailable && !d.contextLost && d.meshCount > 0 &&
+           d.canvasWidth > 0 && d.canvasHeight > 0;
+  });
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   init(container: HTMLElement, spec: HandSpec | null, handedness: Handedness = 'right'): void {
     this.handedness = handedness;
 
+    const webgl = probeWebGL();
+    if (!webgl.ok) {
+      this.diagnostics.update((d) => ({
+        ...d, webglAvailable: false, lastError: webgl.detail,
+      }));
+      return;
+    }
+
+    // The panel can be laid out at zero height on the first frame; falling back
+    // to a nominal size keeps the renderer valid until the ResizeObserver fires,
+    // instead of leaving a 0x0 canvas that never recovers.
+    const width = container.clientWidth || 640;
+    const height = container.clientHeight || 480;
+
+    try {
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setSize(width, height);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -99,9 +178,7 @@ export class HandScene {
     this.scene = new THREE.Scene();
     this.scene.background = null;
 
-    this.camera = new THREE.PerspectiveCamera(
-      32, container.clientWidth / container.clientHeight, 0.05, 100,
-    );
+    this.camera = new THREE.PerspectiveCamera(32, width / height, 0.05, 100);
     this.camera.position.set(1.35, 0.55, 2.15);
 
     this.setupControls(container);
@@ -116,8 +193,30 @@ export class HandScene {
     this.resizeObserver = new ResizeObserver(() => this.resize(container));
     this.resizeObserver.observe(container);
 
+    // A lost context is otherwise silent: the canvas simply stops updating.
+    this.renderer.domElement.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      this.diagnostics.update((d) => ({
+        ...d, contextLost: true,
+        lastError: 'The WebGL context was lost. This usually means the GPU ' +
+                   'driver reset or the tab was starved of memory.',
+      }));
+    });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this.diagnostics.update((d) => ({ ...d, contextLost: false, lastError: null }));
+    });
+
+    this.refreshDiagnostics();
+
     this.clock.start();
     this.loop();
+    } catch (error) {
+      this.diagnostics.update((d) => ({
+        ...d,
+        lastError: `Scene initialisation failed: ${(error as Error).message}`,
+      }));
+      return;
+    }
 
     // Build the other hand during an idle slot so even the first toggle is
     // instant. Geometry only — the expensive textures are already shared.
@@ -137,7 +236,10 @@ export class HandScene {
     this.controls?.dispose();
     this.rigs.forEach((rig) => rig.dispose());
     this.rigs.clear();
-    disposeSharedSkin();
+    // The shared skin is deliberately NOT released here. Routing away from the
+    // laboratory destroys this component and routing back creates another, and
+    // tearing down the cache on every visit would pay the one-second texture
+    // generation each time. It is a handful of megabytes for the session.
     this.pmrem?.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement.remove();
@@ -167,13 +269,74 @@ export class HandScene {
     // and the hand appears to snap upside down.
     this.controls.minPolarAngle = 0.15;
     this.controls.maxPolarAngle = Math.PI - 0.15;
+
+    // A manual orbit means the view is no longer a named preset, and an
+    // in-flight tween should yield to the user rather than fight them.
+    this.controls.addEventListener('start', () => {
+      this.cameraTween = null;
+      this.controls.enableDamping = true;
+      this.activeView.set(null);
+    });
+
     this.controls.update();
   }
 
+  /** Where the camera returns to, and the view each preset frames. */
+  private static readonly VIEWS: Record<CameraView, { position: [number, number, number]; target: [number, number, number] }> = {
+    default: { position: [1.35, 0.55, 2.15], target: [0, 0.12, 0] },
+    palm:    { position: [0.0, 0.15, 2.35], target: [0, 0.10, 0] },
+    back:    { position: [0.0, 0.20, -2.35], target: [0, 0.10, 0] },
+    side:    { position: [2.30, 0.30, 0.10], target: [0, 0.10, 0] },
+    top:     { position: [0.05, 2.30, 0.55], target: [0, 0.05, 0] },
+  };
+
+  private cameraTween: {
+    from: THREE.Vector3; to: THREE.Vector3;
+    fromTarget: THREE.Vector3; toTarget: THREE.Vector3;
+    start: number; duration: number;
+  } | null = null;
+
+  /**
+   * Move the camera to a named view.
+   *
+   * Animated rather than snapped: an instant jump loses the viewer's sense of
+   * which way the hand is facing, and re-orienting after every reset is exactly
+   * the friction the button is meant to remove. Damping is suspended during the
+   * tween so OrbitControls does not fight the interpolation.
+   */
+  moveCameraTo(view: CameraView = 'default', durationMs = 650): void {
+    const preset = HandScene.VIEWS[view] ?? HandScene.VIEWS.default;
+
+    this.cameraTween = {
+      from: this.camera.position.clone(),
+      to: new THREE.Vector3(...preset.position),
+      fromTarget: this.controls.target.clone(),
+      toTarget: new THREE.Vector3(...preset.target),
+      start: performance.now(),
+      duration: Math.max(1, durationMs),
+    };
+    this.controls.enableDamping = false;
+    this.activeView.set(view);
+  }
+
   resetCamera(): void {
-    this.camera.position.set(1.35, 0.55, 2.15);
-    this.controls.target.set(0, 0.12, 0);
-    this.controls.update();
+    this.moveCameraTo('default');
+  }
+
+  private stepCamera(): void {
+    if (!this.cameraTween) return;
+
+    const tween = this.cameraTween;
+    const raw = Math.min(1, (performance.now() - tween.start) / tween.duration);
+    const t = this.easeInOutCubic(raw);
+
+    this.camera.position.lerpVectors(tween.from, tween.to, t);
+    this.controls.target.lerpVectors(tween.fromTarget, tween.toTarget, t);
+
+    if (raw >= 1) {
+      this.cameraTween = null;
+      this.controls.enableDamping = true;
+    }
   }
 
   // ── Scene setup ───────────────────────────────────────────────────────────
@@ -239,7 +402,10 @@ export class HandScene {
     rim.position.set(-1.2, 2.0, -2.4);
     this.scene.add(rim);
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xd6dee6, 0.55));
+    // Ambient floor bounce. Without it the palm side falls into near-black
+    // against the light background, which reads as a missing surface.
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xc8d6e2, 0.75));
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.25));
   }
 
   private setupGround(): void {
@@ -275,6 +441,24 @@ export class HandScene {
     this.rig = this.rigFor(this.handedness);
     this.rig.root.visible = true;
     this.bindTracks();
+    this.refreshDiagnostics();
+  }
+
+  /** Recount what is actually in the scene, for the panel's diagnostics. */
+  private refreshDiagnostics(): void {
+    let meshes = 0;
+    this.rig?.root.traverse((object) => {
+      if ((object as THREE.Mesh).isMesh && object.visible) meshes++;
+    });
+
+    this.diagnostics.update((d) => ({
+      ...d,
+      canvasWidth: this.renderer?.domElement.width ?? 0,
+      canvasHeight: this.renderer?.domElement.height ?? 0,
+      meshCount: meshes,
+      jointsBound: this.tracks.size,
+      specLoaded: this.jointSpecs.size > 0,
+    }));
   }
 
   /**
@@ -315,6 +499,7 @@ export class HandScene {
     this.jointSpecs.clear();
     for (const joint of spec.joints) this.jointSpecs.set(joint.id, joint);
     this.bindTracks();
+    this.refreshDiagnostics();
   }
 
   private bindTracks(): void {
@@ -427,6 +612,7 @@ export class HandScene {
     const delta = this.clock.getDelta();
 
     this.step();
+    this.stepCamera();
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
 
@@ -484,5 +670,6 @@ export class HandScene {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.refreshDiagnostics();
   }
 }

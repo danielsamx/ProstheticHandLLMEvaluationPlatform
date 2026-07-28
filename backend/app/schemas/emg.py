@@ -29,14 +29,19 @@ from app.domain.hand_spec import (
     EMG_CHANNELS,
 )
 from app.services import emg_features
-from app.services.emg_features import NormalisationMode
 
 #: Guard rails on window length. A single sample carries no frequency content;
 #: beyond ~8k rows the prompt stops fitting in any reasonable context window.
 MIN_SAMPLES: int = 4
 MAX_SAMPLES: int = 8_192
 
-Amplitude = Annotated[float, Field(ge=-1.0, le=1.0)]
+#: Raw converter output, in whatever units the acquisition front end produces.
+#:
+#: The bound exists only to reject obvious corruption — a value this large is a
+#: parsing error, not a measurement. Deliberately *not* normalised: the matrix
+#: reaches the model exactly as the hardware produced it, so nothing between the
+#: electrode and the prompt can alter what the model is judged on.
+Amplitude = Annotated[float, Field(ge=-1e6, le=1e6)]
 
 #: Output-only fields, stripped when a serialised window is submitted back.
 _COMPUTED_FIELDS: frozenset[str] = frozenset({"sample_count", "window_ms", "features"})
@@ -58,10 +63,10 @@ class EmgChannelFeatures(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str
-    rms: float = Field(description="Root mean square amplitude.")
-    mav: float = Field(description="Mean absolute value.")
-    zc: int = Field(description="Zero crossings above a 0.01 deadband.")
-    ssc: int = Field(description="Slope sign changes above a 0.01 deadband.")
+    rms: float = Field(description="Root mean square amplitude, in acquisition units.")
+    mav: float = Field(description="Mean absolute value, in acquisition units.")
+    zc: int = Field(description="Zero crossings above a deadband of 5% of this channel's RMS.")
+    ssc: int = Field(description="Slope sign changes above the same relative deadband.")
     wl: float = Field(description="Waveform length per sample.")
     min: float
     max: float
@@ -75,8 +80,9 @@ class EmgWindow(BaseModel):
 
     samples: list[list[Amplitude]] = Field(
         description=(
-            "Raw EMG matrix. One row per time step, 8 columns in CH1..CH8 order, "
-            "amplitudes normalised to [-1.0, 1.0]."
+            "Raw EMG matrix, exactly as acquired. One row per time step, 8 "
+            "columns in CH1..CH8 order. Units are whatever the converter "
+            "produces; no scaling is applied."
         ),
     )
     source_mode: EmgSourceMode = EmgSourceMode.MANUAL
@@ -153,9 +159,26 @@ class EmgWindow(BaseModel):
 
     @property
     def total_activation(self) -> float:
-        """Mean RMS across the eight electrodes."""
+        """Mean RMS across the eight electrodes, in acquisition units."""
         values = [f.rms for f in self.features]
         return sum(values) / len(values) if values else 0.0
+
+    @property
+    def flexor_ratio(self) -> float:
+        """Flexor RMS as a share of flexor + extensor RMS.
+
+        Scale-free, and therefore the number that actually decides open from
+        close. An absolute amplitude threshold depends on the gain, the
+        electrode placement and the subject; this ratio does not.
+
+        Above 0.5 the volar group dominates (closing), below 0.5 the dorsal
+        group does (opening), and near 0.5 with both groups active is a
+        co-contraction.
+        """
+        flexor = self.flexor_activation
+        extensor = self.extensor_activation
+        total = flexor + extensor
+        return flexor / total if total else 0.5
 
     @property
     def flexor_activation(self) -> float:
@@ -193,17 +216,6 @@ class MatrixParseRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=16_000_000)
     sample_rate_hz: int = Field(default=DEFAULT_EMG_SAMPLE_RATE_HZ, ge=100, le=20_000)
-    normalisation: NormalisationMode = Field(
-        default=NormalisationMode.FULL_SCALE,
-        description="'none' expects data already in [-1,1]; 'full_scale' divides "
-        "by the converter's declared range; 'peak' divides by this window's own "
-        "maximum, which breaks amplitude comparability between windows.",
-    )
-    full_scale: float | None = Field(
-        default=None, gt=0,
-        description="Converter full scale in acquisition units, e.g. 512 for a "
-        "10-bit signed ADC. Inferred from the window when omitted.",
-    )
     ground_truth_gesture: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
@@ -214,16 +226,14 @@ class MatrixParseRequest(BaseModel):
 
 
 class MatrixParseResponse(BaseModel):
-    """The parsed window plus a record of what was done to its amplitudes."""
+    """The parsed window, exactly as the file contained it.
+
+    No scaling is applied. `observed_peak` is reported only so the interface can
+    show the signal's range; nothing acts on it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     window: EmgWindow
-    normalisation: NormalisationMode
     observed_peak: float = Field(description="Largest magnitude in the source units.")
-    divisor: float = Field(description="Value the source data was divided by.")
-    inferred_full_scale: bool = Field(
-        description="True when the divisor was guessed from this window rather "
-        "than declared, which makes cross-recording comparisons unsafe."
-    )
     warnings: list[str] = Field(default_factory=list)

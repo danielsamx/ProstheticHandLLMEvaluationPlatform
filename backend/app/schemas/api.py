@@ -50,6 +50,10 @@ class ModelOut(BaseModel):
     input_cost_per_1k: float
     output_cost_per_1k: float
     is_enabled: bool
+    #: For local runtimes: is this model loaded right now? ``None`` means the
+    #: question does not apply (hosted provider) or the runtime was unreachable,
+    #: which is different from "not loaded" and is reported as such.
+    is_available: bool | None = None
 
 
 class ModelCreate(BaseModel):
@@ -97,7 +101,10 @@ class SamplingConfigurationIn(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, gt=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1, le=500)
-    max_tokens: int = Field(default=1024, ge=1, le=131_072)
+    #: A complete reply is the command line: one to four tokens. This shares the
+    #: context window with the prompt, so anything generous is budget taken from
+    #: the EMG matrix for nothing. 64 leaves ample room for a model that pads.
+    max_tokens: int = Field(default=64, ge=1, le=131_072)
     seed: int | None = None
     frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
@@ -196,6 +203,8 @@ class PromptPreviewIn(BaseModel):
 
     window: EmgWindow
     handedness: Handedness = Handedness.RIGHT
+    #: Supplied so the preview can compare against that model's context window.
+    model_id: uuid.UUID | None = None
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
     dynamic_prompt_template_id: uuid.UUID | None = None
@@ -223,7 +232,14 @@ class PromptPreviewOut(BaseModel):
     dynamic_prompt_sha256: str
     frozen_context_sha256: str
     full_prompt_sha256: str
+    #: Weighted estimate. A plain characters/4 heuristic under-counts this
+    #: content by more than half: the EMG matrix is almost entirely numbers, and
+    #: a signed three-decimal value costs three to four tokens.
     estimated_prompt_tokens: int
+    token_breakdown: dict[str, int] = Field(default_factory=dict)
+    context_window: int | None = None
+    fits_context: bool = True
+    budget_advice: list[str] = Field(default_factory=list)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -234,6 +250,9 @@ class PromptPreviewOut(BaseModel):
 class RunExecutionIn(BaseModel):
     """Payload behind the "Run Evaluation" button."""
 
+    #: The model is resolved from this. Accepting a separate `model_id` would
+    #: create two ways to say which model runs, and therefore a way for them to
+    #: disagree.
     sampling_configuration_id: uuid.UUID
     window: EmgWindow
     handedness: Handedness = Handedness.RIGHT
@@ -319,6 +338,25 @@ class MetricsOut(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutionErrorOut(BaseModel):
+    """A hard failure — provider outage, malformed response, platform bug.
+
+    Carried on the execution because a provider rejection produces no validation
+    result at all: without this the interface can only report that something
+    failed, never what.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    category: str
+    error_type: str
+    message: str
+    provider_status_code: int | None = None
+    provider_error_code: str | None = None
+    is_retryable: bool
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -347,6 +385,7 @@ class ExecutionOut(BaseModel):
     validation_result: ValidationResultOut | None = None
     metrics: MetricsOut | None = None
     movement: MovementOut | None = None
+    errors: list[ExecutionErrorOut] = Field(default_factory=list)
 
 
 class RunExecutionOut(BaseModel):
@@ -357,6 +396,48 @@ class RunExecutionOut(BaseModel):
 # ═════════════════════════════════════════════════════════════════════════════
 # Experiments & comparison
 # ═════════════════════════════════════════════════════════════════════════════
+
+
+class ModelSummary(BaseModel):
+    """One model's record, aggregated in SQL."""
+
+    litellm_model: str
+    provider_slug: str | None = None
+    executions: int
+    passed: int
+    pass_rate: float
+    mean_latency_ms: float | None = None
+    total_tokens: int
+    total_cost_usd: float
+    last_run_at: datetime | None = None
+
+
+class ExecutionStats(BaseModel):
+    """Headline numbers for the dashboard.
+
+    Computed in the database rather than over whatever page the client happens
+    to have loaded: aggregating a visible slice and presenting it as the whole
+    is how a dashboard starts lying.
+    """
+
+    executions: int
+    passed: int
+    failed: int
+    provider_errors: int
+    pass_rate: float | None = None
+    distinct_models: int
+    distinct_windows: int
+    mean_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
+    total_tokens: int
+    total_cost_usd: float
+    first_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    by_model: list[ModelSummary] = Field(default_factory=list)
+    top_failure_codes: list[dict[str, Any]] = Field(default_factory=list)
+    #: False when the set spans more than one frozen context, in which case the
+    #: per-model rows are not a fair comparison.
+    comparable: bool = True
 
 
 class ExperimentIn(BaseModel):

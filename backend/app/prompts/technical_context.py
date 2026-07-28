@@ -39,11 +39,15 @@ from app.domain.hand_spec import (
     get_limit_profile,
 )
 from app.domain.kinematics import describe_kinematics
-from app.schemas.llm_output import llm_json_schema
+from app.schemas.llm_output import output_contract
 
-#: Bumped to 2.0.0: the EMG section now describes a raw sample matrix
-#: rather than eight scalar feature vectors.
-TECHNICAL_CONTEXT_VERSION: Final[str] = "2.0.0"
+#: 2.0.0 — the EMG section describes a raw sample matrix rather than eight
+#:         scalar feature vectors.
+#: 3.0.0 — the output contract is stated compactly instead of embedding the full
+#:         JSON Schema. The schema is already sent as `response_format`, so
+#:         inlining it too spent ~1,300 tokens repeating a constraint the
+#:         runtime enforces anyway.
+TECHNICAL_CONTEXT_VERSION: Final[str] = "3.0.0"
 TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - generated from manuals"
 
 
@@ -74,23 +78,19 @@ def _gesture_table() -> str:
 
 
 def _emg_block() -> str:
-    sites = "\n".join(f"  {ch}: {site}" for ch, site in EMG_CHANNEL_SITES.items())
-    feats = "\n".join(f"  {k}: {v}" for k, v in EMG_FEATURE_DOC.items())
+    sites = "\n".join(f"  {ch}  {site}" for ch, site in EMG_CHANNEL_SITES.items())
     return (
-        f"INPUT FORMAT: you receive a raw sample MATRIX, not a summary.\n"
-        f"  Shape: N x {EMG_CHANNEL_COUNT}\n"
-        f"  Layout: {EMG_MATRIX_LAYOUT}\n"
-        f"  Amplitude range: {EMG_AMPLITUDE_MIN} to {EMG_AMPLITUDE_MAX} (normalised)\n"
-        f"  Typical window: {DEFAULT_EMG_SAMPLES} rows at "
-        f"{DEFAULT_EMG_SAMPLE_RATE_HZ} Hz\n"
-        f"  Each row is one instant in time; read DOWN a column to follow one\n"
-        f"  electrode through the window.\n\n"
-        f"Electrode montage (columns, left to right):\n{sites}\n\n"
-        f"A derived feature table is supplied beneath the matrix. It is computed\n"
-        f"from the COMPLETE window even when the printed matrix is decimated, so\n"
-        f"trust the table for magnitudes and the matrix for temporal structure:\n"
-        f"{feats}"
+        f"Input: a raw sample matrix, N x {EMG_CHANNEL_COUNT}. One row per time "
+        f"step (ascending); columns are CH1..CH8 in order. Values are the "
+        f"converter's own output, UNSCALED - read them relatively, never against "
+        f"an absolute threshold.\n\n"
+        f"Electrodes (column order):\n{sites}"
     )
+
+
+def _output_block() -> str:
+    """What to send back. Short, because the contract now is one line."""
+    return output_contract()
 
 
 def build_technical_context(
@@ -109,127 +109,92 @@ def build_technical_context(
         if g.safety_class in (SafetyClass.SYSTEM, SafetyClass.EMERGENCY)
     )
 
-    schema_block = ""
-    if include_json_schema:
-        schema_block = (
-            "\n## 9. OUTPUT JSON SCHEMA (authoritative)\n\n"
-            "Your response is validated against this JSON Schema. Any deviation "
-            "marks the execution as failed.\n\n"
-            "```json\n" + json.dumps(llm_json_schema(), indent=2, ensure_ascii=False) + "\n```\n"
-        )
+    schema_block = "\n## 9. WHAT TO SEND BACK\n\n" + _output_block() + "\n"
 
     return f"""\
-# TECHNICAL CONTEXT - HANDi EPN V3 PROSTHETIC HAND
+# HANDi EPN V3 - TECHNICAL CONTEXT
 
-Active mechanical limit profile: **{profile.id.value}** ({profile.label})
-Source: {profile.source}
+Limit profile: **{profile.id.value}** ({profile.source})
 
-## 1. MECHANICAL ARCHITECTURE
+## 1. MECHANICS
 
-Anthropomorphic 3D-printed hand, tendon driven, developed at Escuela Politecnica
-Nacional (Laboratorio "Alan Turing") on the open-source HANDi Hand platform.
+3D-printed anthropomorphic hand, tendon driven. {DRIVEN_DOF} commanded DOF,
+{KINEMATIC_DOF} modelled joints, {POTENTIOMETER_COUNT} joint potentiometers,
+{FSR_COUNT} fingertip force sensors.
+Digits: D1 thumb, D2 index, D3 middle, D4 ring, D5 pinky.
 
-- Independently commanded degrees of freedom: {DRIVEN_DOF}
-- Modelled rotational joints in the kinematic chain: {KINEMATIC_DOF}
-- Digits: D1 thumb, D2 index, D3 middle, D4 ring, D5 pinky
-- Joint indicators: R = rotation (thumb only), P = proximal (MCP),
-  I = intermediate (PIP), D = distal (DIP/IP)
-- Actuation: 5 x Pololu 380:1 HPCB 6 V gearmotors with 12 CPR magnetic encoders,
-  plus 1 x MG90S servo for thumb rotation
-- Controller: ESP32 (Wemos D1 R32) stacked with 2 x Adafruit Motor Shield V3
-- Proprioception: {POTENTIOMETER_COUNT} rotary potentiometers (via CD74HC4067 16:1
-  multiplexer, channels C5..C15) and {FSR_COUNT} fingertip force-sensitive resistors
+COUPLING: one motor drives a whole finger through a tendon. Commanding a finger
+flexes its entire chain at a fixed ratio. Individual phalanges are NOT
+addressable.
 
-CRITICAL COUPLING RULE: each finger is driven by ONE motor through a tendon.
-Commanding a finger flexes its whole chain by a fixed ratio. Individual phalanges
-are NOT independently addressable.
+## 2. POSITION COMMANDS
 
-## 2. COMMAND SET - POSITIONS
-
-Format: `<LETTER><INTEGER>` where INTEGER is an absolute encoder target.
-Several may be combined in one line, separated by commas.
+`<LETTER><INTEGER>` - absolute encoder target. Comma-separate to combine.
 
 {_limits_table(profile)}
 
-Positions outside these bounds are rejected. 0 = fully extended (open),
-maximum = fully flexed (closed).
+0 = fully extended (open). Maximum = fully flexed (closed). Out-of-range values
+are rejected.
 
-## 3. COMMAND SET - PRESET GESTURES
+## 3. PRESET GESTURES
 
-Format: a single letter with no numeric argument.
+Single letter, no argument.
 
 {_gesture_table()}
 
-Pose gestures: {pose_gestures}
-System commands (must be sent alone): {system_gestures}
+System commands (send alone): {system_gestures}
 
-DISAMBIGUATION: `C` alone closes the whole hand. `C` followed by digits (e.g.
-`C400`) addresses the middle finger. Never emit a bare `C` when you mean the
-middle finger.
+DISAMBIGUATION: bare `C` closes the hand; `C` with digits (`C400`) addresses the
+middle finger. Never send a bare `C` meaning the middle finger.
 
-## 4. KINEMATIC COUPLING (actuator -> joints, max flexion, coupling ratio)
+## 4. KINEMATIC COUPLING
 
 {describe_kinematics()}
 
-## 5. COMMUNICATION PROTOCOL
+## 5. PROTOCOL
 
-- Transport: {PROTOCOL.transport}
-- Device name: "{PROTOCOL.device_name}"
-- Baud rate: {PROTOCOL.baud_rate}
-- Encoding: {PROTOCOL.encoding}, case sensitive, uppercase letters only
-- Token separator: "{PROTOCOL.separator}"
-- Line terminator: newline
-- Maximum line length: {PROTOCOL.max_line_length} characters
+{PROTOCOL.transport}, {PROTOCOL.baud_rate} baud, ASCII uppercase, `,` separated,
+newline terminated, max {PROTOCOL.max_line_length} chars.
 
-Valid examples:
-    A320,B180,C400,D200      -> four fingers to explicit positions
-    E120,F350                -> thumb rotation and flexion
-    P                        -> firmware pinch preset
-    S                        -> emergency stop
+Valid:   `A320,B180,C400,D200`  ·  `E120,F350`  ·  `P`  ·  `S`
+Invalid: `A700` (over range) · `P,A320` (gesture + positions) · `a320` (lower
+case) · `A320;B180` (wrong separator) · `Z100` (no such command)
 
-Invalid examples:
-    A700                     -> exceeds the documented maximum
-    P,A320                   -> preset gesture combined with positions
-    a320                     -> lowercase
-    A320;B180                -> wrong separator
-    Z100                     -> command letter does not exist
+## 6. LIMITS AND SAFETY
 
-## 6. MECHANICAL AND SAFETY CONSTRAINTS
+Max {SAFETY.max_simultaneous_actuators} actuators at once. Speed
+{SAFETY.min_speed_pct}-{SAFETY.max_speed_pct}% (default {SAFETY.default_speed_pct}).
+Motion {SAFETY.min_move_duration_ms}-{SAFETY.max_move_duration_ms} ms.
+Minimum {SAFETY.min_command_interval_ms} ms between transmissions.
 
-- Maximum actuators driven simultaneously: {SAFETY.max_simultaneous_actuators}
-- Speed envelope: {SAFETY.min_speed_pct}%-{SAFETY.max_speed_pct}%
-  (default {SAFETY.default_speed_pct}%)
-- Maximum encoder rate at 100% duty: {SAFETY.max_counts_per_second} counts/s
-- Movement duration must fall between {SAFETY.min_move_duration_ms} ms and
-  {SAFETY.max_move_duration_ms} ms
-- Minimum interval between transmissions: {SAFETY.min_command_interval_ms} ms
-- Fingertip FSR above {SAFETY.fsr_saturation_threshold:.2f} indicates force
-  saturation; do not increase flexion further
-- A fully opposed AND fully flexed thumb combined with a fully flexed index or
-  middle finger is a collision: avoid it
-- The hand must be returned to the OPEN pose at the end of a session
+- A fully opposed AND fully flexed thumb against a fully flexed index or middle
+  finger is a collision. Avoid it.
+- Return the hand to OPEN at the end of a session.
 
 ## 7. EMG INPUT
 
 {_emg_block()}
 
-Interpretation guidance:
-- Raw EMG is a zero-mean stochastic signal. Its INFORMATION IS IN THE ENVELOPE
-  and the frequency content, not in any individual sample. Never read a single
-  row as a command.
-- Volar/flexor columns (CH1-CH4) dominant  -> closing / grasping intent
-- Dorsal/extensor columns (CH5-CH7) dominant -> opening / extension intent
-- Simultaneous high flexor AND extensor RMS -> co-contraction, normally a
-  deliberate STOP request
-- All channels below approximately 0.10 RMS -> rest; return intent="no_action"
-- Amplitude gradation encodes movement magnitude, not only movement selection
-- A rising envelope across the window indicates an onset; a flat one indicates a
-  sustained hold
+Features supplied below the matrix, computed over the COMPLETE window even when
+the printed excerpt is decimated:
+  rms/mav = amplitude (force) · zc/ssc = frequency content · wl = both combined
 
-## 8. RESPONSE DISCIPLINE
+HOW TO READ IT - the decisive quantity is the BALANCE between groups, not any
+absolute number. Gain, electrode placement and subject all shift the absolute
+scale; the ratio survives all three.
 
-Emit one JSON object. No prose. No code fences. All required fields present.
-`serial_command` must agree with `intent`, `gesture` and `commands`.
+  flexor_ratio = flexor RMS / (flexor RMS + extensor RMS)
+
+  > 0.65        volar group dominates      -> closing / grasping
+  < 0.35        dorsal group dominates     -> opening / extension
+  ~ 0.5, both groups strong relative to the window's own baseline
+                -> co-contraction, normally a deliberate STOP
+  all channels near the window's floor     -> rest, return intent="no_action"
+
+Raw EMG is a zero-mean stochastic signal. Its information is in the envelope and
+the frequency content. Never read a single row as a command.
+
+## 8. RESPONSE
 {schema_block}"""
 
 

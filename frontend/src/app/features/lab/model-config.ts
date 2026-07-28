@@ -27,20 +27,21 @@ import { LabStore } from '@core/services/lab.store';
   ],
   template: `
     <div class="space-y-4">
-      <!-- Provider / model -->
-      <div class="grid grid-cols-2 gap-3">
+      <!--
+        Provider, model and the import action share one row. They are a single
+        decision — "which model am I running" — and splitting the refresh into a
+        separate block made it read like an unrelated maintenance task.
+      -->
+      <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] items-end gap-2">
         <div>
-          <label class="lab-label">LLM Provider</label>
+          <label class="lab-label">Provider</label>
           <mat-form-field appearance="outline" class="dense-field">
             <mat-select
               [ngModel]="store.selectedProviderId()"
               (ngModelChange)="store.selectedProviderId.set($event)"
             >
               @for (p of store.providers(); track p.id) {
-                <mat-option [value]="p.id">
-                  {{ p.display_name }}
-                  @if (p.is_local) { <span class="text-[10px] text-navy">&nbsp;local</span> }
-                </mat-option>
+                <mat-option [value]="p.id">{{ p.display_name }}</mat-option>
               }
             </mat-select>
           </mat-form-field>
@@ -53,47 +54,43 @@ import { LabStore } from '@core/services/lab.store';
               [ngModel]="store.selectedModelId()"
               (ngModelChange)="store.selectedModelId.set($event)"
             >
-              @for (m of store.modelsForProvider(); track m.id) {
+              <!--
+                Only models the runtime currently has loaded. A catalogue entry
+                is not proof a model can run, and offering one that cannot fails
+                at inference with an error that looks like a connectivity fault.
+              -->
+              @for (m of store.runnableModels(); track m.id) {
                 <mat-option [value]="m.id">{{ m.display_name }}</mat-option>
               } @empty {
-                <mat-option [disabled]="true">No models in the catalogue</mat-option>
+                <mat-option [disabled]="true">No model loaded in LM Studio</mat-option>
               }
             </mat-select>
           </mat-form-field>
         </div>
+
+        <button mat-stroked-button class="!mb-0.5 !h-[34px] !px-3 !text-[11px]"
+                matTooltip="Re-read the model list from the running LM Studio server"
+                [disabled]="store.syncingCatalogue()"
+                (click)="store.syncLmStudioModels()">
+          <mat-icon class="!h-4 !w-4 !text-[16px]">
+            {{ store.syncingCatalogue() ? 'hourglass_empty' : 'sync' }}
+          </mat-icon>
+          <span class="hidden lg:inline">Refresh</span>
+        </button>
       </div>
 
-      @if (!store.models().length) {
+      @if (!store.runnableModels().length) {
         <div class="flex items-start gap-2 rounded border border-amber bg-amber/10 px-3 py-2 text-[11px] text-navy">
           <mat-icon class="!h-4 !w-4 !text-[16px]">inventory_2</mat-icon>
           <span>
-            The model catalogue is empty. If the backend just restarted, reload
-            the page; otherwise load a model in LM Studio and use
-            <strong>Import loaded models</strong> below.
+            Load a model in LM Studio and start its server, then press
+            <strong>Refresh</strong>.
           </span>
         </div>
       }
 
-      @if (store.lmStudio(); as lm) {
-        <div class="flex items-center justify-between rounded border border-ink-200 bg-ink-50 px-3 py-2 text-[11px]">
-          <span class="text-ink-500">
-            LM Studio at <span class="lab-mono">{{ lm.api_base }}</span> &mdash;
-            @if (lm.reachable) {
-              <span class="text-navy">{{ lm.models.length }} model(s) loaded</span>
-            } @else {
-              <span class="text-pink">unreachable</span>
-            }
-          </span>
-          <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
-                  (click)="store.syncLmStudioModels()">
-            <mat-icon class="!h-4 !w-4 !text-[16px]">sync</mat-icon>
-            Import loaded models
-          </button>
-        </div>
-      }
-
-      <!-- Decoding parameters -->
-      <div class="grid grid-cols-2 gap-x-4 gap-y-3">
+      <!-- Sliders stay two-up: they need the width to be readable. -->
+      <div class="grid grid-cols-2 gap-x-3 gap-y-2">
         <div>
           <div class="flex items-baseline justify-between">
             <label class="lab-label">Temperature</label>
@@ -123,10 +120,15 @@ import { LabStore } from '@core/services/lab.store';
           </mat-slider>
         </div>
 
+      </div>
+
+      <!-- The numeric parameters are short values with short labels; three to a
+           row fits them without truncation and saves a third of the height. -->
+      <div class="grid grid-cols-3 gap-x-3 gap-y-2">
         <div>
           <label class="lab-label" [matTooltip]="topKTooltip()">Top-K</label>
           <mat-form-field appearance="outline" class="dense-field">
-            <input matInput type="number" min="1" max="500" placeholder="disabled"
+            <input matInput type="number" min="1" max="500" placeholder="off"
                    [disabled]="!(store.selectedModel()?.supports_top_k ?? false)"
                    [ngModel]="store.topK()"
                    (ngModelChange)="store.topK.set($event === null || $event === '' ? null : +$event)" />
@@ -134,7 +136,10 @@ import { LabStore } from '@core/services/lab.store';
         </div>
 
         <div>
-          <label class="lab-label">Max Tokens</label>
+          <label class="lab-label"
+                 matTooltip="Shares the context window with the prompt. A complete response is about 130 tokens.">
+            Max Tokens
+          </label>
           <mat-form-field appearance="outline" class="dense-field">
             <input matInput type="number" min="1"
                    [ngModel]="store.maxTokens()"
@@ -155,7 +160,7 @@ import { LabStore } from '@core/services/lab.store';
         </div>
 
         <div>
-          <label class="lab-label">Frequency Penalty</label>
+          <label class="lab-label">Freq. Penalty</label>
           <mat-form-field appearance="outline" class="dense-field">
             <input matInput type="number" min="-2" max="2" step="0.1"
                    [disabled]="!(store.selectedModel()?.supports_penalties ?? true)"
@@ -179,57 +184,24 @@ import { LabStore } from '@core/services/lab.store';
           <mat-form-field appearance="outline" class="dense-field">
             <mat-select [ngModel]="store.responseFormat()"
                         (ngModelChange)="store.responseFormat.set($event)">
-              <mat-option value="text">text (free-form)</mat-option>
+              <mat-option value="text">text</mat-option>
               <mat-option value="json_object">json_object</mat-option>
               <mat-option value="json_schema"
                           [disabled]="!(store.selectedModel()?.supports_json_schema ?? false)">
-                json_schema (strict)
+                json_schema
               </mat-option>
             </mat-select>
           </mat-form-field>
         </div>
       </div>
 
-      <!-- Experimental conditions -->
-      <div class="grid grid-cols-3 gap-3 border-t border-ink-200 pt-3">
-        <div>
-          <label class="lab-label">Hand</label>
-          <mat-form-field appearance="outline" class="dense-field">
-            <mat-select [ngModel]="store.handedness()"
-                        (ngModelChange)="store.handedness.set($event)">
-              <mat-option value="right">Right</mat-option>
-              <mat-option value="left">Left</mat-option>
-            </mat-select>
-          </mat-form-field>
-        </div>
-
-        <div>
-          <label class="lab-label"
-                 matTooltip="The manual documents two different travel envelopes; pin the one this run assumes.">
-            Limit profile
-          </label>
-          <mat-form-field appearance="outline" class="dense-field">
-            <mat-select [ngModel]="store.limitProfile()"
-                        (ngModelChange)="store.limitProfile.set($event)">
-              @for (p of store.handSpec()?.limit_profiles ?? []; track p.id) {
-                <mat-option [value]="p.id">{{ p.id }}</mat-option>
-              }
-            </mat-select>
-          </mat-form-field>
-        </div>
-
-        <div>
-          <label class="lab-label" matTooltip="Repeat the identical run to measure determinism.">
-            Repetitions
-          </label>
-          <mat-form-field appearance="outline" class="dense-field">
-            <input matInput type="number" min="1" max="50"
-                   [ngModel]="store.repetitions()"
-                   (ngModelChange)="store.repetitions.set(+$event)" />
-          </mat-form-field>
-        </div>
-      </div>
-    </div>
+      <!--
+        Hand, limit profile and repetitions were controls without a decision
+        behind them: this hand is right-handed, TABLE_5_V3 is the profile the
+        firmware implements, and a single run is what the button means. Pinning
+        them removes three ways to make a comparison accidentally incomparable.
+        They remain parameters on the API for when a second unit exists.
+      -->
   `,
 })
 export class ModelConfig {

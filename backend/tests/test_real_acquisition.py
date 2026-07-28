@@ -15,7 +15,6 @@ import pytest
 from app.domain.hand_spec import EMG_CHANNEL_COUNT, Handedness
 from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
-from app.services.emg_features import NormalisationError, NormalisationMode, normalise_matrix
 from app.services.emg_service import parse_matrix_text, window_checksum
 
 FIXTURE = Path(__file__).parent / "fixtures" / "apertura_mano_muestra_02.csv"
@@ -45,66 +44,45 @@ def test_values_are_signed_converter_counts(raw_matrix):
     assert all(v == int(v) for v in flat)
 
 
-def test_raw_counts_are_refused_without_a_normalisation_choice(raw_matrix):
-    with pytest.raises(NormalisationError, match="raw converter counts"):
-        normalise_matrix(raw_matrix, NormalisationMode.NONE)
-
-
-def test_declared_full_scale_produces_a_valid_window(raw_matrix):
-    matrix, report = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    window = EmgWindow(samples=matrix, sample_rate_hz=1000)
-
-    assert report.divisor == 512
-    assert window.sample_count == 404
-    assert window.window_ms == 404.0
-    assert all(abs(v) <= 1.0 for row in window.samples for v in row)
-
 
 def test_the_recording_is_flexor_dominant(raw_matrix):
-    """Whatever the divisor, the balance between electrode groups is preserved -
-    it is the ratio, not the absolute level, that identifies the gesture."""
-    matrix, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    window = EmgWindow(samples=matrix, sample_rate_hz=1000)
+    """The ratio, not the absolute level, identifies the gesture — which is why
+    the matrix can be passed through unscaled."""
+    window = EmgWindow(samples=raw_matrix, sample_rate_hz=1000)
     assert window.flexor_activation > window.extensor_activation * 2
-
-
-def test_full_scale_choice_moves_the_activation_reading(raw_matrix):
-    """Documents a real calibration trap.
-
-    The technical context tells the model that a mean RMS below 0.10 means rest.
-    With this file, a full scale of 512 puts the window under that threshold and
-    a full scale of 128 puts it over - so the declared full scale has to match
-    the hardware, or the model is told 'rest' about a recording of movement.
-    """
-    wide, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    tight, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 128)
-
-    assert EmgWindow(samples=wide).total_activation < 0.10
-    assert EmgWindow(samples=tight).total_activation > 0.10
-
-
-def test_checksum_changes_with_the_normalisation(raw_matrix):
-    a, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    b, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 128)
-    assert window_checksum(EmgWindow(samples=a)) != window_checksum(EmgWindow(samples=b))
+    assert window.flexor_ratio > 0.65
 
 
 def test_the_window_renders_into_a_prompt(raw_matrix):
-    matrix, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    window = EmgWindow(samples=matrix, sample_rate_hz=1000, ground_truth_gesture="hand_open")
+    window = EmgWindow(samples=raw_matrix, sample_rate_hz=1000,
+                       ground_truth_gesture="hand_open")
     prompt = build_prompt(window, handedness=Handedness.RIGHT)
 
     block = prompt.dynamic_prompt
     assert "404 samples @ 1000 Hz" in block
-    # 404 rows exceeds the 256-row print budget, so it is decimated and labelled.
-    assert "every 2nd row is shown" in block
+    # 404 rows exceeds the print budget, so it is decimated and labelled.
+    assert "row is shown" in block
     assert "computed from the complete window" in block
     for index in range(1, 9):
         assert f"| CH{index} |" in block
 
 
-def test_prompt_stays_within_a_reasonable_context_budget(raw_matrix):
-    matrix, _ = normalise_matrix(raw_matrix, NormalisationMode.FULL_SCALE, 512)
-    prompt = build_prompt(EmgWindow(samples=matrix, sample_rate_hz=1000))
-    # ~4 chars per token: this must leave room in a 16k-token window.
-    assert prompt.char_counts()["total"] < 40_000
+def test_prompt_from_a_real_recording_fits_an_8k_context(raw_matrix):
+    """The recording that first overflowed the runtime.
+
+    LM Studio reported `request (16676 tokens) exceeds the available context
+    size (8192 tokens)`. Three things caused it: the full JSON Schema was
+    embedded in the prompt *and* sent as `response_format`, 256 matrix rows were
+    printed, and both frozen blocks were verbose. All fixed; this keeps them so.
+    """
+    from app.prompts.budget import check
+
+    prompt = build_prompt(EmgWindow(samples=raw_matrix, sample_rate_hz=1000))
+
+    report = check(
+        system_prompt=prompt.system_prompt,
+        technical_context=prompt.technical_context,
+        dynamic_prompt=prompt.dynamic_prompt,
+        context_window=8192,
+    )
+    assert report.fits, report.summary()

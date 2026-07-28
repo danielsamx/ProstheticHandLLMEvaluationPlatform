@@ -11,7 +11,6 @@ import {
   EmgMatrixFormat,
   EmgSourceMode,
   EmgWindow,
-  NormalisationMode,
   computeFeatures,
   toWindowPayload,
 } from '../models/emg.model';
@@ -64,6 +63,11 @@ export class LabStore {
   readonly selectedSystemPromptId = signal<string | null>(null);
   readonly selectedContextId = signal<string | null>(null);
   readonly selectedTemplateId = signal<string | null>(null);
+  //
+  // Pinned rather than exposed. Each was a control with no decision behind it,
+  // and each was a way for two runs to become quietly incomparable. They stay
+  // as signals so the API contract and the simulator are unchanged.
+  //
   readonly handedness = signal<Handedness>('right');
   readonly limitProfile = signal<LimitProfileId>('TABLE_5_V3');
   readonly repetitions = signal(1);
@@ -82,6 +86,7 @@ export class LabStore {
   // ── Prompt editing ────────────────────────────────────────────────────────
   readonly systemPromptDraft = signal<string>('');
   readonly technicalContextDraft = signal<string>('');
+  readonly dynamicTemplateDraft = signal<string>('');
   readonly promptPreview = signal<PromptPreview | null>(null);
   readonly previewLoading = signal(false);
 
@@ -94,11 +99,6 @@ export class LabStore {
   readonly matrixFormat = signal<EmgMatrixFormat | null>(null);
   readonly matrixError = signal<string | null>(null);
   readonly matrixWarnings = signal<string[]>([]);
-  /** Divisor applied to the last imported matrix, and whether it was declared. */
-  readonly normalisation = signal<NormalisationMode>('full_scale');
-  readonly fullScale = signal<number | null>(512);
-  readonly appliedDivisor = signal<number | null>(null);
-  readonly inferredFullScale = signal(false);
   readonly channelLabels = CHANNEL_LABELS;
 
   // ── Run state ─────────────────────────────────────────────────────────────
@@ -123,10 +123,24 @@ export class LabStore {
    */
   readonly modelsForProvider = computed(() => {
     const providerId = this.selectedProviderId();
-    if (!providerId) return this.models();
-    const filtered = this.models().filter((m) => m.provider_id === providerId);
-    return filtered.length ? filtered : this.models();
+    const all = this.models();
+    const scoped = providerId ? all.filter((m) => m.provider_id === providerId) : all;
+    const list = scoped.length ? scoped : all;
+
+    // Runnable models first. Availability is only known for local runtimes;
+    // `undefined`/`null` means "not applicable", not "unavailable".
+    return [...list].sort((a, b) => {
+      const rank = (m: LlmModel) => (m.is_available === false ? 1 : 0);
+      return rank(a) - rank(b) || a.display_name.localeCompare(b.display_name);
+    });
   });
+
+  /** Models that can be run right now. */
+  readonly runnableModels = computed(
+    () => this.modelsForProvider().filter((m) => m.is_available !== false),
+  );
+
+  readonly syncingCatalogue = signal(false);
 
   readonly currentWindow = computed<EmgWindow>(() => ({
     samples: this.matrix(),
@@ -161,21 +175,75 @@ export class LabStore {
     return list.reduce((sum, f) => sum + f.rms, 0) / 3;
   });
 
-  /** Below this the correct answer is "do not move". */
-  readonly belowActivationThreshold = computed(() => this.meanRms() < 0.1);
+  /**
+   * Flexor share of flexor + extensor activity.
+   *
+   * The decisive quantity now that the matrix is raw. It is dimensionless, so
+   * it survives a change of gain, electrode placement or subject — none of
+   * which an absolute amplitude threshold survives.
+   */
+  readonly flexorRatio = computed(() => {
+    const flexor = this.flexorActivation();
+    const extensor = this.extensorActivation();
+    const total = flexor + extensor;
+    return total ? flexor / total : 0.5;
+  });
 
-  readonly coContraction = computed(
-    () => this.flexorActivation() > 0.2 && this.extensorActivation() > 0.2,
-  );
+  /**
+   * The window's own noise floor: the quietest channel's RMS, with headroom.
+   *
+   * Rest has to be defined by contrast rather than by a fixed number, because
+   * "quiet" in converter counts depends entirely on the front end.
+   */
+  readonly restFloor = computed(() => {
+    const values = this.features().map((f) => f.rms).filter((v) => v > 0);
+    if (!values.length) return Infinity;
+    return Math.min(...values) * 2.5;
+  });
 
   readonly matrixValid = computed(() => {
     const rows = this.matrix();
     return rows.length >= 4 && rows.every((row) => row.length === EMG_CHANNEL_COUNT);
   });
 
-  readonly canRun = computed(
-    () => !this.running() && !!this.selectedConfigurationId() && this.matrixValid(),
-  );
+  readonly canRun = computed(() => this.blockingReason() === null);
+
+  /**
+   * Why Run Evaluation is unavailable, or `null` when it is.
+   *
+   * A disabled button with no explanation is the worst state this panel can be
+   * in: every prerequisite is satisfied somewhere else on screen, and nothing
+   * points at the one that is missing.
+   */
+  readonly blockingReason = computed<string | null>(() => {
+    if (this.running()) return 'A run is already in progress.';
+    if (!this.apiReachable()) return 'The backend is not reachable.';
+
+    if (!this.models().length) {
+      return 'No model in the catalogue. Start LM Studio, load a model, then press Refresh.';
+    }
+    if (!this.selectedModelId()) return 'Select a model.';
+
+    if (!this.configurations().length) {
+      return 'No sampling configuration exists yet. Press Refresh to create a '
+           + 'baseline for the loaded models.';
+    }
+    if (!this.selectedConfigurationId()) {
+      return 'Select a saved configuration, or press the bookmark button to save '
+           + 'the current parameters.';
+    }
+
+    const rows = this.matrix();
+    if (rows.length < 4) return 'Load an EMG matrix — import a CSV or generate a synthetic window.';
+    if (!rows.every((row) => row.length === EMG_CHANNEL_COUNT)) {
+      return `Every row must have exactly ${EMG_CHANNEL_COUNT} columns.`;
+    }
+    if (rows.every((row) => row.every((value) => value === 0))) {
+      return 'The matrix is all zeros. Load a recording or a synthetic window.';
+    }
+
+    return null;
+  });
 
   readonly successRate = computed(() => {
     const runs = this.history();
@@ -197,7 +265,18 @@ export class LabStore {
   async bootstrap(): Promise<void> {
     // One reachability check up front. Without it, a stopped backend produces
     // nine identical failures and buries the single fact that matters.
-    this.apiReachable.set(await this.api.ping());
+    const health = await this.api.ping();
+    this.apiReachable.set(health.reachable);
+
+    // A backend that is up but migrating-behind will serve reference data and
+    // then fail on the first write. Say so before the user hits Run Evaluation.
+    if (health.reachable && health.schema && health.schema.ok === false) {
+      this.error.set(
+        `The backend is running but its database schema is out of date. ` +
+        `${health.schema.detail ?? ''} Run: docker compose down && docker compose up --build`,
+      );
+    }
+
     if (!this.apiReachable()) {
       this.error.set(
         `Cannot reach the backend at ${environment.apiBase}. ` +
@@ -269,18 +348,47 @@ export class LabStore {
       if (activeContext.limit_profile) this.limitProfile.set(activeContext.limit_profile);
     }
     const activeTemplate = templates.find((p) => p.is_active) ?? templates[0];
-    if (activeTemplate) this.selectedTemplateId.set(activeTemplate.id);
+    if (activeTemplate) {
+      this.selectedTemplateId.set(activeTemplate.id);
+      this.dynamicTemplateDraft.set(activeTemplate.content);
+    }
 
     const firstConfig = configs[0];
     if (firstConfig?.id) this.applyConfiguration(firstConfig);
+    this.ensureSelectableConfiguration();
 
     if (failed.length) {
       this.error.set(`Could not load: ${failed.join('; ')}.`);
     }
 
-    void this.probeLmStudio();
+    void this.syncCatalogueWithRuntime();
     void this.refreshHistory();
     this.bridge.connect();
+  }
+
+  /**
+   * Reconcile the catalogue with what LM Studio actually has loaded.
+   *
+   * The dropdown offering a model the researcher never downloaded is worse than
+   * offering nothing: it fails at inference time with a provider error that
+   * looks like a connectivity problem. Importing on boot keeps the list honest
+   * without a manual step.
+   */
+  private async syncCatalogueWithRuntime(): Promise<void> {
+    await this.probeLmStudio();
+    const probe = this.lmStudio();
+    if (!probe?.reachable || !probe.models.length) return;
+
+    const known = new Set(this.models().map((m) => m.model_key));
+    const missing = probe.models.filter((m) => !known.has(m.id));
+    if (!missing.length) {
+      // Still refresh: availability flags may have changed even if the set has not.
+      this.models.set(await firstValueFrom(this.api.listModels()));
+      this.ensureSelectableModel();
+      return;
+    }
+
+    await this.syncLmStudioModels();
   }
 
   async probeLmStudio(): Promise<void> {
@@ -292,13 +400,53 @@ export class LabStore {
   }
 
   async syncLmStudioModels(): Promise<void> {
+    this.syncingCatalogue.set(true);
     try {
       await firstValueFrom(this.api.syncLmStudio());
       this.models.set(await firstValueFrom(this.api.listModels()));
       await this.probeLmStudio();
+      this.configurations.set(await firstValueFrom(this.api.listConfigurations()));
+      this.ensureSelectableModel();
+      this.ensureSelectableConfiguration();
     } catch (err) {
       this.error.set(this.describe(err));
+    } finally {
+      this.syncingCatalogue.set(false);
     }
+  }
+
+  /**
+   * Keep the selection on something that can actually run.
+   *
+   * A model can disappear between sessions — unloaded in LM Studio, or swapped
+   * for another build. Leaving the select pointing at it shows an empty control
+   * with no explanation, and Run Evaluation then fails at the provider.
+   */
+  /**
+   * Keep a configuration selected for the chosen model.
+   *
+   * Configurations are per-model, so switching models can leave the selection
+   * pointing at one that belongs to a different model — which reads as "nothing
+   * selected" and disables the run.
+   */
+  private ensureSelectableConfiguration(): void {
+    const modelId = this.selectedModelId();
+    const configs = this.configurations();
+    if (!configs.length) return;
+
+    const current = configs.find((c) => c.id === this.selectedConfigurationId());
+    if (current && (!modelId || current.model_id === modelId)) return;
+
+    const match = modelId ? configs.find((c) => c.model_id === modelId) : undefined;
+    const chosen = match ?? configs[0];
+    if (chosen?.id) this.applyConfiguration(chosen);
+  }
+
+  private ensureSelectableModel(): void {
+    const runnable = this.runnableModels();
+    if (!runnable.length) return;
+    if (runnable.some((m) => m.id === this.selectedModelId())) return;
+    this.selectedModelId.set(runnable[0].id);
   }
 
   // ── Configuration handling ────────────────────────────────────────────────
@@ -318,9 +466,13 @@ export class LabStore {
     this.responseFormat.set(config.response_format);
   }
 
-  private draftConfiguration(name: string): SamplingConfiguration {
+  private draftConfiguration(
+    name: string,
+    options: { description?: string; isFavorite?: boolean } = {},
+  ): SamplingConfiguration {
     return {
       name,
+      description: options.description ?? null,
       model_id: this.selectedModelId()!,
       temperature: this.temperature(),
       top_p: this.topP(),
@@ -332,19 +484,22 @@ export class LabStore {
       stop_sequences: [],
       response_format: this.responseFormat(),
       extra_params: {},
-      is_favorite: false,
+      is_favorite: options.isFavorite ?? false,
     };
   }
 
   /** Persist the current knob positions so the exact condition can be replayed. */
-  async saveConfiguration(name: string): Promise<void> {
+  async saveConfiguration(
+    name: string,
+    options: { description?: string; isFavorite?: boolean } = {},
+  ): Promise<void> {
     if (!this.selectedModelId()) {
       this.error.set('Select a model before saving a configuration.');
       return;
     }
     try {
       const saved = await firstValueFrom(
-        this.api.createConfiguration(this.draftConfiguration(name)),
+        this.api.createConfiguration(this.draftConfiguration(name, options)),
       );
       this.configurations.update((list) => [saved, ...list]);
       if (saved.id) this.selectedConfigurationId.set(saved.id);
@@ -465,14 +620,10 @@ export class LabStore {
       const result = await firstValueFrom(this.api.parseMatrix({
         text,
         sample_rate_hz: this.sampleRateHz(),
-        normalisation: this.normalisation(),
-        full_scale: this.normalisation() === 'full_scale' ? this.fullScale() : null,
         ground_truth_gesture: this.groundTruth(),
       }));
       this.matrix.set(result.window.samples);
       this.emgMode.set('manual');
-      this.appliedDivisor.set(result.divisor);
-      this.inferredFullScale.set(result.inferred_full_scale);
       this.matrixWarnings.set(result.warnings);
       return true;
     } catch (err) {
@@ -508,8 +659,10 @@ export class LabStore {
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
         dynamic_prompt_template_id: this.selectedTemplateId(),
+        model_id: this.selectedModelId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
+        dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,
       }));
@@ -529,6 +682,21 @@ export class LabStore {
   dirtyContext(): boolean {
     const active = this.technicalContexts().find((p) => p.id === this.selectedContextId());
     return !!active && active.content !== this.technicalContextDraft();
+  }
+
+  dirtyTemplate(): boolean {
+    const active = this.dynamicTemplates().find((p) => p.id === this.selectedTemplateId());
+    return !!active && active.content !== this.dynamicTemplateDraft();
+  }
+
+  async saveTemplateVersion(name: string, version: string): Promise<void> {
+    const saved = await firstValueFrom(this.api.createDynamicTemplate({
+      name, version, content: this.dynamicTemplateDraft(), activate: true,
+    }));
+    this.dynamicTemplates.update(
+      (list) => [saved, ...list.map((p) => ({ ...p, is_active: false }))],
+    );
+    this.selectedTemplateId.set(saved.id);
   }
 
   /** Save an edited block as a NEW version - existing rows are immutable. */
@@ -573,6 +741,7 @@ export class LabStore {
         dynamic_prompt_template_id: this.selectedTemplateId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
+        dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,
         repetitions: this.repetitions(),
@@ -626,13 +795,24 @@ export class LabStore {
       if (err.status === 0) {
         return `cannot reach ${environment.apiBase} (backend down, or CORS)`;
       }
-      const body = err.error as { detail?: unknown } | string | null;
+      const body = err.error as
+        { detail?: unknown; hint?: string; request_id?: string } | string | null;
+
       if (typeof body === 'string' && body.trim()) return `${err.status} ${body}`;
-      const detail = typeof body === 'object' && body ? body.detail : undefined;
-      if (typeof detail === 'string') return `${err.status} ${detail}`;
-      if (Array.isArray(detail)) {
-        return `${err.status} ${detail.map((d) => JSON.stringify(d)).join('; ')}`;
+
+      if (typeof body === 'object' && body) {
+        const parts: string[] = [`${err.status}`];
+        if (typeof body.detail === 'string') parts.push(body.detail);
+        else if (Array.isArray(body.detail)) {
+          parts.push(body.detail.map((d) => JSON.stringify(d)).join('; '));
+        } else parts.push(err.statusText || 'request failed');
+        // The backend attaches a hint when it knows the likely cause — most
+        // often a pending migration after an upgrade.
+        if (body.hint) parts.push(`— ${body.hint}`);
+        if (body.request_id) parts.push(`(request ${body.request_id})`);
+        return parts.join(' ');
       }
+
       return `${err.status} ${err.statusText || 'request failed'}`;
     }
     if (err instanceof Error) return err.message;

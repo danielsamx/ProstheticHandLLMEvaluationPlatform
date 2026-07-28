@@ -10,15 +10,17 @@ measure which representation a given model actually relies on.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from enum import Enum
 from typing import Sequence
 
-#: Amplitudes below this are treated as baseline noise for ZC/SSC counting.
-#: Without a deadband, sensor noise around zero inflates both counts by an order
-#: of magnitude and the features stop discriminating anything.
-ZC_THRESHOLD: float = 0.01
-SSC_THRESHOLD: float = 0.01
+#: Deadband for ZC/SSC counting, as a fraction of the channel's own RMS.
+#:
+#: It has to be relative. The signal now arrives in whatever units the converter
+#: produces — counts, microvolts, anything — so a fixed absolute threshold would
+#: either count every noise crossing on a small-amplitude channel or suppress
+#: real ones on a large one. Scaling by RMS makes both features invariant to the
+#: acquisition gain, which is the property that lets two recordings be compared.
+ZC_THRESHOLD_RATIO: float = 0.05
+SSC_THRESHOLD_RATIO: float = 0.05
 
 
 def column(matrix: Sequence[Sequence[float]], index: int) -> list[float]:
@@ -40,8 +42,14 @@ def mav(signal: Sequence[float]) -> float:
     return sum(abs(x) for x in signal) / len(signal)
 
 
-def zero_crossings(signal: Sequence[float], threshold: float = ZC_THRESHOLD) -> int:
-    """Sign changes above a deadband - a proxy for mean frequency."""
+def zero_crossings(signal: Sequence[float], threshold: float | None = None) -> int:
+    """Sign changes above a deadband - a proxy for mean frequency.
+
+    ``threshold`` defaults to a fraction of the signal's own RMS, so the count
+    does not change when the acquisition gain does.
+    """
+    if threshold is None:
+        threshold = rms(signal) * ZC_THRESHOLD_RATIO
     count = 0
     for previous, current in zip(signal, signal[1:]):
         if previous * current < 0 and abs(previous - current) >= threshold:
@@ -49,8 +57,10 @@ def zero_crossings(signal: Sequence[float], threshold: float = ZC_THRESHOLD) -> 
     return count
 
 
-def slope_sign_changes(signal: Sequence[float], threshold: float = SSC_THRESHOLD) -> int:
+def slope_sign_changes(signal: Sequence[float], threshold: float | None = None) -> int:
     """Direction reversals of the first difference - frequency content."""
+    if threshold is None:
+        threshold = rms(signal) * SSC_THRESHOLD_RATIO
     count = 0
     for a, b, c in zip(signal, signal[1:], signal[2:]):
         if (b - a) * (b - c) > 0 and (abs(b - a) >= threshold or abs(b - c) >= threshold):
@@ -122,99 +132,3 @@ def downsample(
 
     factor = math.ceil(total / max_rows)
     return [list(matrix[i]) for i in range(0, total, factor)], factor
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Amplitude normalisation
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class NormalisationError(ValueError):
-    """The requested normalisation cannot produce values inside [-1, 1]."""
-
-
-class NormalisationMode(str, Enum):
-    """How raw acquisition values are mapped onto [-1.0, 1.0]."""
-
-    NONE = "none"              # already normalised; reject anything outside range
-    FULL_SCALE = "full_scale"  # divide by a declared converter full scale
-    PEAK = "peak"              # divide by this window's own largest magnitude
-
-
-@dataclass(slots=True)
-class NormalisationReport:
-    """What was done to the amplitudes, and whether it is safe to compare."""
-
-    mode: NormalisationMode
-    observed_peak: float
-    divisor: float
-    inferred_full_scale: bool
-    warnings: list[str]
-
-
-def _next_power_of_two(value: float) -> int:
-    """Smallest power of two at or above ``value`` (minimum 1)."""
-    if value <= 1:
-        return 1
-    return 1 << (math.ceil(math.log2(value)))
-
-
-def normalise_matrix(
-    matrix: list[list[float]],
-    mode: NormalisationMode = NormalisationMode.FULL_SCALE,
-    full_scale: float | None = None,
-) -> tuple[list[list[float]], NormalisationReport]:
-    """Map acquisition units onto the normalised amplitude range.
-
-    The choice of divisor is not cosmetic. ``PEAK`` rescales each window by its
-    own maximum, which means a resting window and a maximal grasp both come out
-    peaking at 1.0 — the amplitude information that distinguishes them is
-    destroyed. Since this platform exists to compare activation levels across
-    windows and across models, ``FULL_SCALE`` is the default and ``PEAK`` is
-    reported as comparability-breaking whenever it is used.
-    """
-    peak = max((abs(v) for row in matrix for v in row), default=0.0)
-    warnings: list[str] = []
-    inferred = False
-
-    if mode is NormalisationMode.NONE:
-        divisor = 1.0
-    elif mode is NormalisationMode.PEAK:
-        divisor = peak or 1.0
-        warnings.append(
-            "Peak normalisation rescales this window by its own maximum, so its "
-            "amplitudes are NOT comparable with windows normalised differently. "
-            "Use a declared full scale for any experiment that compares "
-            "activation levels."
-        )
-    else:
-        if full_scale is None or full_scale <= 0:
-            divisor = float(_next_power_of_two(peak))
-            inferred = True
-            warnings.append(
-                f"Full scale was inferred from this window as {divisor:g} (peak "
-                f"{peak:g}). Declare the converter's actual full scale to keep "
-                "amplitudes comparable across recordings."
-            )
-        else:
-            divisor = float(full_scale)
-
-    if divisor != 1.0:
-        matrix = [[v / divisor for v in row] for row in matrix]
-
-    out_of_range = [v for row in matrix for v in row if abs(v) > 1.0]
-    if out_of_range:
-        largest = max(abs(v) for v in out_of_range)
-        if mode is NormalisationMode.NONE:
-            raise NormalisationError(
-                f"{len(out_of_range)} value(s) fall outside [-1.0, 1.0] (largest "
-                f"magnitude {peak:g}). These look like raw converter counts — "
-                "choose a normalisation mode."
-            )
-        raise NormalisationError(
-            f"After dividing by {divisor:g}, {len(out_of_range)} value(s) still "
-            f"exceed 1.0 (largest {largest:g}). The declared full scale is too "
-            f"small for this data; the observed peak is {peak:g}."
-        )
-
-    return matrix, NormalisationReport(mode, peak, divisor, inferred, warnings)

@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { MatTooltipModule } from '@angular/material/tooltip';
 
 /**
  * Eight stacked EMG traces drawn as inline SVG.
@@ -11,8 +12,14 @@ import { ChangeDetectionStrategy, Component, computed, input } from '@angular/co
   selector: 'ph-emg-matrix-plot',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [MatTooltipModule],
   template: `
     <div class="space-y-px">
+      <div class="mb-1 flex items-center justify-between text-[10px] text-ink-400">
+        <span>traces scaled to the window peak for display only</span>
+        <span class="lab-mono">±{{ formatRms(displayScale()) }}</span>
+      </div>
+
       @for (trace of traces(); track trace.label) {
         <div class="flex items-center gap-2">
           <span class="lab-mono w-8 shrink-0 text-[10px] font-semibold"
@@ -30,8 +37,9 @@ import { ChangeDetectionStrategy, Component, computed, input } from '@angular/co
                   vector-effect="non-scaling-stroke" />
           </svg>
 
-          <span class="lab-mono w-11 shrink-0 text-right text-[10px] text-ink-500">
-            {{ trace.rms.toFixed(3) }}
+          <span class="lab-mono w-12 shrink-0 text-right text-[10px] text-ink-500"
+                matTooltip="RMS in acquisition units">
+            {{ formatRms(trace.rms) }}
           </span>
         </div>
       }
@@ -42,8 +50,16 @@ export class EmgMatrixPlot {
   /** N x 8 matrix of normalised samples. */
   readonly samples = input.required<number[][]>();
   readonly labels = input.required<string[]>();
-  /** Per-channel RMS, shown beside each trace. */
+  /** Per-channel RMS, shown beside each trace. In acquisition units. */
   readonly rms = input<number[]>([]);
+
+  /** Raw counts and fractional values need different precision. */
+  protected formatRms(value: number): string {
+    if (value === 0) return '0';
+    if (value >= 100) return value.toFixed(0);
+    if (value >= 1) return value.toFixed(1);
+    return value.toFixed(3);
+  }
 
   protected readonly width = 600;
   protected readonly height = 32;
@@ -60,11 +76,35 @@ export class EmgMatrixPlot {
     return '#FFC107';
   }
 
+  /**
+   * Display scale: the largest magnitude anywhere in the window.
+   *
+   * The data is raw converter output and is never rescaled — but a plot has a
+   * fixed height, so it needs *some* mapping from value to pixel. Deriving it
+   * from the window's own peak means a trace fills the axis regardless of the
+   * acquisition gain. Using a shared peak rather than a per-channel one keeps
+   * the relative amplitude between channels visible, which is the thing the
+   * researcher is actually reading.
+   *
+   * This affects pixels only. Nothing downstream sees it.
+   */
+  protected readonly displayScale = computed(() => {
+    let peak = 0;
+    for (const row of this.samples()) {
+      for (const value of row) {
+        const magnitude = Math.abs(value);
+        if (magnitude > peak) peak = magnitude;
+      }
+    }
+    return peak || 1;
+  });
+
   protected readonly traces = computed(() => {
     const matrix = this.samples();
     const labels = this.labels();
     const rmsValues = this.rms();
     const rows = matrix.length;
+    const scale = this.displayScale();
 
     return labels.map((label, column) => {
       if (rows < 2) {
@@ -82,7 +122,8 @@ export class EmgMatrixPlot {
       const points: string[] = [];
       for (let i = 0; i < rows; i += stride) {
         const x = (i / (rows - 1)) * this.width;
-        const value = Math.max(-1, Math.min(1, matrix[i][column] ?? 0));
+        // Normalised for drawing only, by the window's own peak.
+        const value = Math.max(-1, Math.min(1, (matrix[i][column] ?? 0) / scale));
         const y = this.height / 2 - value * (this.height / 2 - 1);
         points.push(`${points.length === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(2)}`);
       }

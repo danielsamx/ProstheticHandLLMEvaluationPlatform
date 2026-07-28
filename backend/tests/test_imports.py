@@ -181,3 +181,128 @@ def test_production_uses_the_explicit_list_only() -> None:
     from app.core.config import Settings
 
     assert Settings(_env_file=None, app_env="production").cors_origin_regex is None
+
+
+# ── Error surfacing ─────────────────────────────────────────────────────────
+
+
+def test_every_unhandled_exception_has_a_handler() -> None:
+    """Without a catch-all, an exception propagates through BaseHTTPMiddleware
+    and can reach the browser as a reset socket rather than a response. The
+    client then sees status 0, which is indistinguishable from "the server is
+    down" — and the real cause stays invisible."""
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py"
+    tree = ast.parse(source.read_text())
+
+    handled = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call) and getattr(
+                decorator.func, "attr", ""
+            ) == "exception_handler":
+                for arg in decorator.args:
+                    if isinstance(arg, ast.Name):
+                        handled.add(arg.id)
+
+    assert "Exception" in handled, "no catch-all exception handler"
+    assert "ValueError" in handled
+    assert "RequestValidationError" in handled
+
+
+def test_error_responses_carry_cors_headers() -> None:
+    """Exception handlers run outside CORSMiddleware, so an error response would
+    otherwise arrive without CORS headers and the browser would report a network
+    failure instead of showing the message."""
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py").read_text()
+    assert "Access-Control-Allow-Origin" in source
+
+
+def test_schema_check_runs_at_startup() -> None:
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py").read_text()
+    assert "check_and_log" in source
+    assert "schema_report" in source
+
+
+def test_schema_report_names_the_remedy() -> None:
+    from app.core.schema_check import SchemaReport
+
+    report = SchemaReport(ok=False, missing_columns={"executions": ["temperature"]})
+    summary = report.summary()
+    assert "executions" in summary and "temperature" in summary
+    assert "behind" in summary.lower()
+
+
+def test_healthy_schema_reports_ok() -> None:
+    from app.core.schema_check import SchemaReport
+
+    assert "matches" in SchemaReport(ok=True).summary()
+
+
+# ── Structured logging ──────────────────────────────────────────────────────
+
+
+def test_no_log_call_passes_a_reserved_logrecord_attribute() -> None:
+    """`logging` raises on a colliding `extra` key rather than ignoring it, so a
+    line written to *report* a problem takes the process down instead.
+
+    `extra={"name": ...}` crashed the seed into a restart loop. The logger now
+    renames collisions, but the call sites should not rely on that.
+    """
+    import ast
+    import logging
+    import pathlib
+
+    probe = logging.LogRecord("l", 20, "p", 1, "m", None, None)
+    reserved = set(vars(probe)) | {"message", "asctime", "taskName"}
+
+    offenders: list[str] = []
+    root = pathlib.Path(__file__).resolve().parent.parent / "app"
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "extra" or not isinstance(keyword.value, ast.Dict):
+                    continue
+                for key in keyword.value.keys:
+                    if isinstance(key, ast.Constant) and key.value in reserved:
+                        offenders.append(
+                            f"{path.name}:{node.lineno} extra={{'{key.value}': ...}}"
+                        )
+
+    assert not offenders, "reserved LogRecord attributes in extra: " + "; ".join(offenders)
+
+
+def test_the_logger_survives_a_reserved_key_anyway() -> None:
+    """Belt and braces: a future call site should degrade, not crash."""
+    import io
+    import json
+    import logging
+
+    from app.core.logging import JsonFormatter, get_logger
+
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setFormatter(JsonFormatter())
+
+    root = logging.getLogger()
+    previous, previous_level = root.handlers, root.level
+    root.handlers, root.level = [handler], logging.INFO
+    try:
+        get_logger("probe").warning("collides", extra={"name": "x", "module": "y"})
+    finally:
+        root.handlers, root.level = previous, previous_level
+
+    payload = json.loads(buffer.getvalue())
+    # Renamed, not dropped: the value is usually the point of the line.
+    assert payload["name_"] == "x"
+    assert payload["module_"] == "y"

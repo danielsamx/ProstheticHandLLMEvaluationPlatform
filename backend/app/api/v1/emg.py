@@ -10,8 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.domain.hand_spec import (
-    EMG_AMPLITUDE_MAX,
-    EMG_AMPLITUDE_MIN,
     EMG_CHANNELS,
     EMG_CHANNEL_COUNT,
     EMG_CHANNEL_SITES,
@@ -27,7 +25,6 @@ from app.schemas.emg import (
     MatrixParseResponse,
 )
 from app.services import emg_service
-from app.services.emg_features import NormalisationMode
 
 router = APIRouter(prefix="/emg", tags=["emg"])
 
@@ -39,11 +36,9 @@ async def matrix_format() -> dict:
         "channels": list(EMG_CHANNELS),
         "sites": dict(EMG_CHANNEL_SITES),
         "layout": EMG_MATRIX_LAYOUT,
-        "amplitude_min": EMG_AMPLITUDE_MIN,
-        "amplitude_max": EMG_AMPLITUDE_MAX,
+        "units": "raw converter output; no scaling is applied",
         "min_rows": MIN_SAMPLES,
         "max_rows": MAX_SAMPLES,
-        "normalisation_modes": [m.value for m in NormalisationMode],
         "header_note": "A label-only first line is skipped, whether it reads "
                        "CH0..CH7 or CH1..CH8.",
     }
@@ -61,20 +56,17 @@ async def blank_window(
 async def parse_matrix(payload: MatrixParseRequest) -> MatrixParseResponse:
     """Read an N x 8 matrix out of pasted CSV, TSV, whitespace or JSON text.
 
-    Permissive about delimiters and about header labels - acquisition tools
-    emit CH0..CH7 as readily as CH1..CH8, and the header is skipped by shape
-    rather than by matching specific names. Strict about the matrix itself: a
-    silently transposed matrix would corrupt every derived feature, so that
-    case is detected and named explicitly rather than accepted.
+    Values pass through unchanged. Nothing between the electrode and the prompt
+    rescales them, so what the model is judged on is what the hardware produced.
 
-    The response reports the divisor that was applied, because how amplitudes
-    were normalised determines whether two windows can be compared at all.
+    Permissive about delimiters and about header labels - acquisition tools emit
+    CH0..CH7 as readily as CH1..CH8, and the header is skipped by shape rather
+    than by matching specific names. Strict about the matrix itself: a silently
+    transposed matrix would corrupt every derived feature, so that case is
+    detected and named explicitly rather than accepted.
     """
     try:
-        raw = emg_service.parse_matrix_text(payload.text)
-        matrix, report = emg_service.normalise_matrix(
-            raw, payload.normalisation, payload.full_scale
-        )
+        matrix = emg_service.parse_matrix_text(payload.text)
     except emg_service.MatrixError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
@@ -84,22 +76,13 @@ async def parse_matrix(payload: MatrixParseRequest) -> MatrixParseResponse:
             source_mode=EmgSourceMode.MANUAL,
             sample_rate_hz=payload.sample_rate_hz,
             ground_truth_gesture=payload.ground_truth_gesture,
-            notes=(
-                f"Imported matrix, {payload.normalisation.value} normalisation "
-                f"(divisor {report.divisor:g}, source peak {report.observed_peak:g})."
-            ),
+            notes="Imported matrix, unmodified.",
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
-    return MatrixParseResponse(
-        window=window,
-        normalisation=report.mode,
-        observed_peak=report.observed_peak,
-        divisor=report.divisor,
-        inferred_full_scale=report.inferred_full_scale,
-        warnings=report.warnings,
-    )
+    peak = max((abs(v) for row in matrix for v in row), default=0.0)
+    return MatrixParseResponse(window=window, observed_peak=peak, warnings=[])
 
 
 @router.get("/synthetic/gestures", response_model=list[str])

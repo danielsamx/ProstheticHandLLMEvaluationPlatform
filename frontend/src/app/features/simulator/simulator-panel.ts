@@ -16,7 +16,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { Handedness } from '@core/models/hand.model';
 import { LabStore } from '@core/services/lab.store';
 import { SimulatorBridgeService } from '@core/services/simulator-bridge.service';
-import { HandScene } from './hand-scene';
+import { CameraView, HandScene } from './hand-scene';
 
 /**
  * Right half of the screen: the 3D simulator.
@@ -34,6 +34,34 @@ import { HandScene } from './hand-scene';
     <div class="relative h-full w-full overflow-hidden bg-gradient-to-b from-ink-50 to-white">
       <!-- Viewport: OrbitControls binds its listeners to this element -->
       <div #viewport class="absolute inset-0 cursor-grab active:cursor-grabbing"></div>
+
+      <!--
+        A blank 3D panel is the least debuggable failure in the application: it
+        looks the same whether WebGL is missing, the canvas has zero size, or the
+        specification never arrived. Say which it is.
+      -->
+      @if (!scene.ready()) {
+        <div class="absolute inset-0 flex items-center justify-center p-6">
+          <div class="max-w-md rounded-lg border border-amber bg-white/95 p-4 shadow-panel backdrop-blur">
+            <div class="mb-2 flex items-center gap-2">
+              <mat-icon class="!h-5 !w-5 !text-[20px] text-amber">visibility_off</mat-icon>
+              <span class="text-sm font-semibold text-navy">The hand is not being rendered</span>
+            </div>
+
+            <p class="mb-3 text-[12px] leading-relaxed text-ink-600">{{ blockingReason() }}</p>
+
+            <dl class="divide-y divide-ink-100 overflow-hidden rounded border border-ink-200 text-[11px]">
+              @for (row of diagnosticRows(); track row.label) {
+                <div class="flex items-center justify-between px-2.5 py-1.5">
+                  <dt class="text-ink-500">{{ row.label }}</dt>
+                  <dd class="lab-mono font-medium"
+                      [class]="row.ok ? 'text-navy' : 'text-pink'">{{ row.value }}</dd>
+                </div>
+              }
+            </dl>
+          </div>
+        </div>
+      }
 
       <!-- ── Header ─────────────────────────────────────────────────────── -->
       <div class="pointer-events-none absolute left-0 right-0 top-0 flex items-start justify-between p-4">
@@ -65,21 +93,26 @@ import { HandScene } from './hand-scene';
             }
           </div>
 
-          <button
-            class="rounded-full border border-ink-200 bg-white p-1.5 text-ink-500 shadow-panel hover:text-pink"
-            matTooltip="Reset the camera"
-            (click)="scene.resetCamera()"
-          >
-            <mat-icon class="!h-4 !w-4 !text-[16px]">center_focus_strong</mat-icon>
-          </button>
+          <!--
+            Camera presets. A single "reset" button forced the user to orbit
+            manually every time they wanted the palm or the back of the hand,
+            which are the two views that actually matter when reading a grasp.
+          -->
+          <div class="flex overflow-hidden rounded-full border border-ink-200 bg-white shadow-panel">
+            @for (view of views; track view.value) {
+              <button
+                class="px-2.5 py-1.5 text-[11px] font-semibold transition-colors"
+                [class]="scene.activeView() === view.value
+                  ? 'bg-ink-100 text-pink'
+                  : 'bg-white text-ink-500 hover:bg-ink-50 hover:text-pink'"
+                [matTooltip]="view.tooltip"
+                (click)="scene.moveCameraTo(view.value)"
+              >
+                <mat-icon class="!h-4 !w-4 !text-[16px]">{{ view.icon }}</mat-icon>
+              </button>
+            }
+          </div>
         </div>
-      </div>
-
-      <!-- ── Interaction hint ───────────────────────────────────────────── -->
-      <div class="pointer-events-none absolute bottom-[210px] left-1/2 -translate-x-1/2">
-        <span class="lab-chip bg-white/85 text-ink-400 backdrop-blur">
-          drag to rotate · scroll to zoom · right-drag to pan
-        </span>
       </div>
 
       <!-- ── Rejection banner: the hand stays still, and says why ───────── -->
@@ -136,6 +169,10 @@ import { HandScene } from './hand-scene';
             }
           </div>
 
+          <div class="mt-2 flex items-center text-[10px] text-ink-500">
+            <span>drag to rotate · scroll to zoom · right-drag to pan.</span>
+          </div>
+
           <div class="mt-2 flex items-center justify-between text-[10px] text-ink-500">
             <span>Pose comes only from validated LLM output — the camera is yours, the hand is not.</span>
             <button class="flex items-center gap-1 font-semibold text-ink-500 hover:text-pink"
@@ -165,6 +202,14 @@ export class SimulatorPanel implements AfterViewInit, OnDestroy {
   protected readonly sides: { value: Handedness; label: string; icon: string }[] = [
     { value: 'left', label: 'Left', icon: 'back_hand' },
     { value: 'right', label: 'Right', icon: 'front_hand' },
+  ];
+
+  protected readonly views: { value: CameraView; icon: string; tooltip: string }[] = [
+    { value: 'default', icon: 'center_focus_strong', tooltip: 'Default three-quarter view' },
+    { value: 'palm', icon: 'front_hand', tooltip: 'Palm view — read the grasp' },
+    { value: 'back', icon: 'back_hand', tooltip: 'Back of the hand — read knuckle flexion' },
+    { value: 'side', icon: 'swipe_right', tooltip: 'Side view — read finger curl' },
+    { value: 'top', icon: 'expand_less', tooltip: 'Top-down view' },
   ];
 
   protected readonly movement = computed(() => this.bridge.lastMovement());
@@ -203,6 +248,46 @@ export class SimulatorPanel implements AfterViewInit, OnDestroy {
 
   protected setHand(side: Handedness): void {
     this.store.handedness.set(side);
+  }
+
+  /** The single most likely cause, stated plainly. */
+  protected blockingReason(): string {
+    const d = this.scene.diagnostics();
+    if (!d.webglAvailable) {
+      return d.lastError ?? 'WebGL is unavailable in this browser.';
+    }
+    if (d.contextLost) {
+      return d.lastError ?? 'The WebGL context was lost; reload the page.';
+    }
+    if (d.lastError) return d.lastError;
+    if (!d.canvasWidth || !d.canvasHeight) {
+      return 'The viewport has no size yet. If this persists, the panel is being '
+           + 'laid out at zero height — try widening the window.';
+    }
+    if (!d.meshCount) {
+      return 'The scene contains no geometry. The rig failed to build; check the '
+           + 'browser console for an error from the simulator.';
+    }
+    if (!d.specLoaded) {
+      return 'The hardware specification has not loaded, so the joints cannot be '
+           + 'bound. Check that the backend is reachable.';
+    }
+    return 'The viewport is not ready yet.';
+  }
+
+  protected diagnosticRows(): { label: string; value: string; ok: boolean }[] {
+    const d = this.scene.diagnostics();
+    return [
+      { label: 'WebGL', value: d.webglAvailable ? 'available' : 'unavailable',
+        ok: d.webglAvailable },
+      { label: 'Context', value: d.contextLost ? 'lost' : 'active', ok: !d.contextLost },
+      { label: 'Canvas', value: `${d.canvasWidth} × ${d.canvasHeight}`,
+        ok: d.canvasWidth > 0 && d.canvasHeight > 0 },
+      { label: 'Meshes in scene', value: String(d.meshCount), ok: d.meshCount > 0 },
+      { label: 'Hand specification', value: d.specLoaded ? 'loaded' : 'missing',
+        ok: d.specLoaded },
+      { label: 'Joints bound', value: String(d.jointsBound), ok: d.jointsBound > 0 },
+    ];
   }
 
   ngAfterViewInit(): void {

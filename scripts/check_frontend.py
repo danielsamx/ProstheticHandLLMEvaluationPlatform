@@ -20,7 +20,8 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent / "frontend" / "src"
+PROJECT = Path(__file__).resolve().parent.parent
+ROOT = PROJECT / "frontend" / "src"
 ALIASES = {
     "@core/": "app/core/",
     "@features/": "app/features/",
@@ -63,6 +64,52 @@ def check_decorator_literals() -> list[str]:
     return problems
 
 
+#: TypeScript request interfaces and the Pydantic models they must mirror.
+#: A field added on one side and forgotten on the other is a build error at best
+#: and a silently dropped parameter at worst.
+CONTRACTS = {
+    "RunExecutionPayload": "RunExecutionIn",
+}
+
+
+def check_request_contracts() -> list[str]:
+    """Compare each TypeScript request type against its Pydantic counterpart."""
+    import ast
+
+    backend = PROJECT / "backend" / "app" / "schemas" / "api.py"
+    client = ROOT / "app" / "core" / "api" / "api.service.ts"
+    if not backend.exists() or not client.exists():
+        # Returning quietly here is how this check spent its first run doing
+        # nothing: the backend path was wrong and nobody noticed.
+        return [f"contract check could not run: {backend} or {client} not found"]
+
+    tree = ast.parse(backend.read_text())
+    source = client.read_text()
+    problems: list[str] = []
+
+    for ts_name, py_name in CONTRACTS.items():
+        node = next(
+            (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == py_name),
+            None,
+        )
+        match = re.search(rf"export interface {ts_name} \{{(.*?)\n\}}", source, re.S)
+        if node is None or match is None:
+            problems.append(f"cannot compare {ts_name} with {py_name}")
+            continue
+
+        backend_fields = {
+            item.target.id for item in node.body if isinstance(item, ast.AnnAssign)
+        }
+        client_fields = set(re.findall(r"^\s*(\w+)\??:", match.group(1), re.M))
+
+        for field in sorted(backend_fields - client_fields):
+            problems.append(f"{ts_name}: missing '{field}' (present on {py_name})")
+        for field in sorted(client_fields - backend_fields):
+            problems.append(f"{ts_name}: '{field}' is not accepted by {py_name}")
+
+    return problems
+
+
 def check_imports() -> list[str]:
     problems: list[str] = []
     for path in sorted(ROOT.rglob("*.ts")):
@@ -87,7 +134,7 @@ def check_imports() -> list[str]:
 
 def main() -> int:
     files = list(ROOT.rglob("*.ts"))
-    problems = check_decorator_literals() + check_imports()
+    problems = check_decorator_literals() + check_imports() + check_request_contracts()
 
     if problems:
         print(f"✗ {len(problems)} problem(s) across {len(files)} TypeScript files:\n")
@@ -95,7 +142,10 @@ def main() -> int:
             print(f"  {problem}")
         return 1
 
-    print(f"✓ {len(files)} TypeScript files: decorator literals and imports are sound")
+    print(
+        f"✓ {len(files)} TypeScript files: decorator literals, imports and "
+        "request contracts are sound"
+    )
     return 0
 
 

@@ -49,8 +49,18 @@ class Settings(BaseSettings):
     db_max_overflow: int = 20
 
     # ── LLM / LiteLLM ────────────────────────────────────────────────────────
-    llm_request_timeout_s: float = 120.0
-    llm_max_retries: int = 1
+    #: Local CPU inference is slow in a way hosted APIs are not: a 3B model can
+    #: spend a minute on prompt processing alone before emitting a token. 120 s
+    #: was a hosted-API figure applied to a workstation.
+    llm_request_timeout_s: float = 600.0
+    #: Zero on purpose.
+    #:
+    #: LiteLLM's retry restarts the request from scratch, including prompt
+    #: processing. For a timeout that guarantees a second failure and doubles
+    #: the wall time — 120 s became 242 s of waiting for nothing. The only retry
+    #: worth making here is the structured-output downgrade, which `call_llm`
+    #: performs itself because it changes the request.
+    llm_max_retries: int = 0
     litellm_proxy_base_url: str | None = None
     litellm_master_key: str | None = None
     litellm_verbose: bool = False

@@ -8,11 +8,6 @@ from pydantic import ValidationError
 from app.domain.hand_spec import EMG_CHANNELS, EMG_CHANNEL_COUNT
 from app.schemas.emg import MAX_SAMPLES, MIN_SAMPLES, EmgSourceMode, EmgWindow
 from app.services import emg_features
-from app.services.emg_features import (
-    NormalisationError,
-    NormalisationMode,
-    normalise_matrix,
-)
 from app.services.emg_service import (
     SYNTHETIC_GESTURES,
     MatrixParseError,
@@ -67,14 +62,20 @@ def test_too_many_rows_is_rejected():
         EmgWindow(samples=flat_matrix(MAX_SAMPLES + 1))
 
 
-@pytest.mark.parametrize("value", [1.5, -1.5, 42.0, -0.000001 - 1])
-def test_amplitudes_outside_the_normalised_range_are_rejected(value):
+@pytest.mark.parametrize("value", [1.5, -109.0, 512.0, 4095.0])
+def test_raw_converter_values_are_accepted_unchanged(value):
+    """No preprocessing: the matrix reaches the model in the units the hardware
+    produced, so nothing between the electrode and the prompt can alter what the
+    model is judged on."""
+    window = EmgWindow(samples=[[value] * EMG_CHANNEL_COUNT for _ in range(10)])
+    assert window.samples[0][0] == value
+
+
+@pytest.mark.parametrize("value", [1e7, -1e7])
+def test_absurd_values_are_still_rejected(value):
+    """The remaining bound catches corruption, not measurement."""
     with pytest.raises(ValidationError):
         EmgWindow(samples=[[value] * EMG_CHANNEL_COUNT for _ in range(10)])
-
-
-def test_boundary_amplitudes_are_accepted():
-    EmgWindow(samples=[[-1.0, 1.0, 0.0, -1.0, 1.0, 0.0, -1.0, 1.0] for _ in range(10)])
 
 
 # ── Derived features ────────────────────────────────────────────────────────
@@ -132,11 +133,25 @@ def test_alternating_signal_maximises_zero_crossings():
     assert window.features[0].zc == 99
 
 
-def test_deadband_suppresses_noise_crossings():
-    """Sub-threshold jitter around zero must not inflate the frequency features."""
-    tiny = [0.001 if n % 2 == 0 else -0.001 for n in range(200)]
-    assert emg_features.zero_crossings(tiny) == 0
-    assert emg_features.zero_crossings([0.5 if n % 2 == 0 else -0.5 for n in range(200)]) == 199
+def test_the_deadband_is_relative_to_the_signal_and_not_absolute():
+    """It has to scale with the signal.
+
+    The units are now whatever the converter produces, so a fixed threshold
+    would count every noise crossing on a low-gain channel and suppress real
+    ones on a high-gain channel. A deadband proportional to RMS makes the count
+    invariant to gain, which is what lets two recordings be compared.
+    """
+    small = [0.5 if n % 2 == 0 else -0.5 for n in range(200)]
+    large = [500.0 if n % 2 == 0 else -500.0 for n in range(200)]
+
+    assert emg_features.zero_crossings(small) == emg_features.zero_crossings(large) == 199
+
+    # A single large excursion in an otherwise quiet channel is one crossing,
+    # not two hundred, at either scale.
+    quiet_small = [0.001 * (1 if n % 2 == 0 else -1) for n in range(200)]
+    quiet_small[100] = 1.0
+    quiet_large = [v * 1000 for v in quiet_small]
+    assert emg_features.zero_crossings(quiet_small) == emg_features.zero_crossings(quiet_large)
 
 
 def test_channels_are_read_down_columns_not_across_rows():
@@ -188,9 +203,9 @@ def test_transposed_input_is_named_explicitly():
 
 
 def test_parsing_preserves_source_units():
-    """Parsing and normalising are separate steps; raw counts survive parsing."""
+    """Values pass through untouched - that is the whole point."""
     matrix = parse_matrix_text("1500,-900,300,120,80,-40,25,10\n" * 5)
-    assert matrix[0][0] == 1500.0
+    assert matrix[0] == [1500.0, -900.0, 300.0, 120.0, 80.0, -40.0, 25.0, 10.0]
 
 
 def test_zero_indexed_headers_are_skipped():
@@ -199,66 +214,6 @@ def test_zero_indexed_headers_are_skipped():
     matrix = parse_matrix_text(text)
     assert len(matrix) == 6
     assert matrix[0][0] == 0.1
-
-
-# ── Amplitude normalisation ─────────────────────────────────────────────────
-
-
-def raw_counts(rows: int = 10, peak: int = 109) -> list[list[float]]:
-    return [[float(peak if c == 0 else peak // (c + 1)) for c in range(EMG_CHANNEL_COUNT)]
-            for _ in range(rows)]
-
-
-def test_none_mode_rejects_raw_counts_and_says_why():
-    with pytest.raises(NormalisationError, match="raw converter counts"):
-        normalise_matrix(raw_counts(), NormalisationMode.NONE)
-
-
-def test_declared_full_scale_is_used_verbatim():
-    matrix, report = normalise_matrix(raw_counts(), NormalisationMode.FULL_SCALE, 512)
-    assert report.divisor == 512
-    assert report.inferred_full_scale is False
-    assert matrix[0][0] == pytest.approx(109 / 512)
-    assert report.warnings == []
-
-
-def test_full_scale_is_inferred_as_a_power_of_two_and_flagged():
-    _, report = normalise_matrix(raw_counts(peak=109), NormalisationMode.FULL_SCALE)
-    assert report.divisor == 128
-    assert report.inferred_full_scale is True
-    assert any("inferred" in w for w in report.warnings)
-
-
-def test_too_small_a_full_scale_is_rejected_with_the_observed_peak():
-    with pytest.raises(NormalisationError, match="observed peak is 109"):
-        normalise_matrix(raw_counts(), NormalisationMode.FULL_SCALE, 16)
-
-
-def test_peak_mode_normalises_to_one_but_warns_about_comparability():
-    """Two windows of different intensity both peak at 1.0 under peak mode.
-
-    That destroys exactly the amplitude information this platform compares, so
-    the mode is usable but never silent.
-    """
-    strong, strong_report = normalise_matrix(raw_counts(peak=400), NormalisationMode.PEAK)
-    weak, _ = normalise_matrix(raw_counts(peak=40), NormalisationMode.PEAK)
-
-    assert max(abs(v) for row in strong for v in row) == pytest.approx(1.0)
-    assert max(abs(v) for row in weak for v in row) == pytest.approx(1.0)
-    assert any("NOT comparable" in w for w in strong_report.warnings)
-
-
-def test_full_scale_mode_preserves_relative_intensity():
-    """The property peak mode loses, and the reason it is not the default."""
-    strong, _ = normalise_matrix(raw_counts(peak=400), NormalisationMode.FULL_SCALE, 512)
-    weak, _ = normalise_matrix(raw_counts(peak=40), NormalisationMode.FULL_SCALE, 512)
-    assert max(abs(v) for row in strong for v in row) > \
-           max(abs(v) for row in weak for v in row) * 5
-
-
-def test_empty_text_is_rejected():
-    with pytest.raises(MatrixParseError):
-        parse_matrix_text("   \n  ")
 
 
 # ── Synthetic stimuli ───────────────────────────────────────────────────────
@@ -273,17 +228,40 @@ def test_every_synthetic_gesture_produces_a_valid_window(gesture):
 
 
 def test_synthetic_signal_never_rails():
-    """Hard clipping would flatten every peak and corrupt ZC/SSC."""
+    """Hard clipping would flatten every peak and corrupt ZC/SSC.
+
+    The generator now emits converter counts, so saturation is at 512 rather
+    than 1.0.
+    """
     for gesture in SYNTHETIC_GESTURES:
         window = synthesise_window(gesture, seed=5)
         for feature in window.features:
-            assert abs(feature.min) < 1.0
-            assert abs(feature.max) < 1.0
+            assert abs(feature.min) < 512.0
+            assert abs(feature.max) < 512.0
 
 
-def test_rest_stays_below_the_activation_threshold():
-    window = synthesise_window("rest", seed=5)
-    assert window.total_activation < 0.10
+def test_rest_is_an_order_of_magnitude_quieter_than_activity():
+    """Absolute thresholds no longer apply, so rest is defined by contrast."""
+    rest = synthesise_window("rest", seed=5)
+    grasp = synthesise_window("power_grasp", seed=5)
+    assert grasp.total_activation > rest.total_activation * 5
+
+
+def test_the_flexor_ratio_separates_the_gestures_without_a_scale():
+    """The quantity the model is told to use. It must work without knowing the
+    gain, which is exactly what removing normalisation demands of it."""
+    assert synthesise_window("power_grasp", seed=5).flexor_ratio > 0.65
+    assert synthesise_window("hand_open", seed=5).flexor_ratio < 0.35
+    assert 0.35 < synthesise_window("co_contraction", seed=5).flexor_ratio < 0.65
+
+
+def test_the_flexor_ratio_is_invariant_to_gain():
+    window = synthesise_window("power_grasp", seed=5)
+    amplified = EmgWindow(
+        samples=[[v * 4 for v in row] for row in window.samples],
+        sample_rate_hz=window.sample_rate_hz,
+    )
+    assert amplified.flexor_ratio == pytest.approx(window.flexor_ratio, abs=0.02)
 
 
 def test_grasp_is_flexor_dominant_and_open_is_extensor_dominant():
@@ -361,3 +339,52 @@ def test_short_windows_are_not_decimated():
     rows, factor = emg_features.downsample(matrix, 256)
     assert factor == 1
     assert len(rows) == 50
+
+
+# ── No preprocessing ────────────────────────────────────────────────────────
+
+
+def test_a_file_reaches_the_prompt_unmodified():
+    """The whole point of removing normalisation: nothing between the electrode
+    and the model can alter what it is judged on."""
+    from pathlib import Path
+
+    from app.prompts.dynamic_prompt import render_dynamic_prompt
+    from app.domain.hand_spec import Handedness
+
+    fixture = Path(__file__).parent / "fixtures" / "apertura_mano_muestra_02.csv"
+    matrix = parse_matrix_text(fixture.read_text())
+    window = EmgWindow(samples=matrix, sample_rate_hz=1000)
+
+    assert window.samples == matrix
+    # The first row of the file, verbatim, must appear in the rendered block.
+    block = render_dynamic_prompt(window, handedness=Handedness.RIGHT)
+    assert "-2.000" in block or "-2." in block
+
+
+def test_features_are_reported_in_acquisition_units():
+    matrix = [[100.0] * EMG_CHANNEL_COUNT for _ in range(20)]
+    window = EmgWindow(samples=matrix)
+    assert window.features[0].rms == pytest.approx(100.0)
+
+
+def test_a_utf8_bom_does_not_turn_the_header_into_data():
+    """Excel and several acquisition tools prepend a BOM, and it is invisible.
+
+    Without stripping it the header stops matching the label pattern, so
+    `CH0,CH1,...,CH7` parses as the perfectly-shaped data row [0,1,...,7] and a
+    fabricated first sample enters the window with nothing to signal it.
+    """
+    body = "CH0,CH1,CH2,CH3,CH4,CH5,CH6,CH7\n" + "-2,-2,-3,-3,0,2,0,0\n" * 10
+
+    plain = parse_matrix_text(body)
+    with_bom = parse_matrix_text("﻿" + body)
+
+    assert with_bom == plain
+    assert len(with_bom) == 10
+    assert with_bom[0] != [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+
+def test_windows_line_endings_are_handled():
+    body = "CH0,CH1,CH2,CH3,CH4,CH5,CH6,CH7\r\n" + "-2,-2,-3,-3,0,2,0,0\r\n" * 5
+    assert len(parse_matrix_text(body)) == 5

@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import AsyncSessionLocal
 from app.domain.hand_spec import LimitProfileId, get_limit_profile
+from app.models.experiment import Execution
 from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration
 from app.models.prompts import (
     DynamicPromptTemplate,
@@ -45,6 +46,12 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Only LM Studio ships enabled.
+#:
+#: The other rows are retained rather than removed so a future comparison
+#: against a hosted model needs a flag flip, not a migration — but an
+#: unselectable provider in a dropdown is clutter, and a provider with no API
+#: key configured is worse than clutter: it fails at inference time.
 PROVIDERS = [
     # LM Studio first: it is the primary runtime for this project.
     {
@@ -57,9 +64,11 @@ PROVIDERS = [
         "api_key_env_var": None,
         "requires_api_key": False,
         "is_local": True,
-        "notes": "OpenAI-compatible local server. Start LM Studio, load a model and "
-                 "enable the local server on port 1234. Use POST "
-                 "/api/v1/providers/lm-studio/sync to import whatever is loaded.",
+        "notes": "OpenAI-compatible local server. Start LM Studio, load a model "
+                 "and enable the local server on port 1234, then POST to "
+                 "/api/v1/providers/lm-studio/sync. Note that its API accepts "
+                 "response_format 'json_schema' or 'text' only — 'json_object' "
+                 "is rejected, and the call layer maps it across automatically.",
     },
     {
         "slug": "ollama",
@@ -68,7 +77,9 @@ PROVIDERS = [
         "api_base": settings.ollama_api_base,
         "requires_api_key": False,
         "is_local": True,
-        "notes": "Secondary local runtime, useful as a cross-check against LM Studio.",
+        "is_enabled": False,
+        "notes": "Secondary local runtime, kept as a cross-check option. Disabled "
+                 "by default; enable the row to make it selectable.",
     },
     {
         "slug": "openai",
@@ -78,7 +89,9 @@ PROVIDERS = [
         "api_key_env_var": "OPENAI_API_KEY",
         "requires_api_key": True,
         "is_local": False,
-        "notes": "Hosted baseline for comparison against local models.",
+        "is_enabled": False,
+        "notes": "Hosted baseline. Disabled by default; set OPENAI_API_KEY and "
+                 "enable the row to make it selectable.",
     },
     {
         "slug": "anthropic",
@@ -88,56 +101,33 @@ PROVIDERS = [
         "api_key_env_var": "ANTHROPIC_API_KEY",
         "requires_api_key": True,
         "is_local": False,
-        "notes": "Hosted baseline for comparison against local models.",
+        "is_enabled": False,
+        "notes": "Hosted baseline. Disabled by default; set ANTHROPIC_API_KEY and "
+                 "enable the row to make it selectable.",
     },
 ]
 
-#: Starter catalogue. LM Studio entries are placeholders - the real list comes
-#: from /providers/lm-studio/sync once a model is actually loaded.
-MODELS = [
-    {
-        "provider": "lm_studio",
-        "model_key": "qwen2.5-7b-instruct",
-        "display_name": "Qwen2.5 7B Instruct (LM Studio)",
-        "family": "qwen2.5",
-        "parameter_count_b": 7.6,
-        "quantisation": "Q4_K_M",
-        "context_window": 32768,
-        "max_output_tokens": 4096,
-        "supports_json_mode": True,
-        "supports_json_schema": True,
-        "supports_seed": True,
-        "supports_top_k": True,
-    },
-    {
-        "provider": "lm_studio",
-        "model_key": "llama-3.1-8b-instruct",
-        "display_name": "Llama 3.1 8B Instruct (LM Studio)",
-        "family": "llama3.1",
-        "parameter_count_b": 8.0,
-        "quantisation": "Q4_K_M",
-        "context_window": 131072,
-        "max_output_tokens": 4096,
-        "supports_json_mode": True,
-        "supports_json_schema": True,
-        "supports_seed": True,
-        "supports_top_k": True,
-    },
-    {
-        "provider": "lm_studio",
-        "model_key": "mistral-7b-instruct-v0.3",
-        "display_name": "Mistral 7B Instruct v0.3 (LM Studio)",
-        "family": "mistral",
-        "parameter_count_b": 7.2,
-        "quantisation": "Q4_K_M",
-        "context_window": 32768,
-        "max_output_tokens": 4096,
-        "supports_json_mode": True,
-        "supports_json_schema": False,
-        "supports_seed": True,
-        "supports_top_k": True,
-    },
-]
+#: The catalogue ships EMPTY for local runtimes.
+#:
+#: It used to carry three plausible LM Studio entries as a starting point, which
+#: was a mistake: the dropdown offered models the researcher had never
+#: downloaded, and picking one failed at inference time with a confusing
+#: provider error. What is *installed* is knowable — `POST
+#: /providers/lm-studio/sync` reads it from the running server — so guessing is
+#: both unnecessary and misleading.
+#:
+#: Hosted providers are different: their catalogue is fixed and public, so
+#: naming a few known-good models costs nothing and saves typing.
+MODELS: list[dict] = []
+
+#: Placeholder rows seeded by earlier versions. Removed on startup when nothing
+#: references them; kept when they do, because an execution must always resolve
+#: to the model row it ran against.
+LEGACY_PLACEHOLDER_KEYS: tuple[str, ...] = (
+    "qwen2.5-7b-instruct",
+    "llama-3.1-8b-instruct",
+    "mistral-7b-instruct-v0.3",
+)
 
 
 async def _seed_providers(session: AsyncSession) -> dict[str, LlmProvider]:
@@ -153,7 +143,17 @@ async def _seed_providers(session: AsyncSession) -> dict[str, LlmProvider]:
             session.add(row)
             await session.flush()
             logger.info("seeded_provider", extra={"slug": spec["slug"]})
-        elif row.is_local and row.api_base != spec["api_base"]:
+        else:
+            desired = spec.get("is_enabled", True)
+            if row.is_enabled != desired:
+                logger.info(
+                    "updated_provider_enabled",
+                    extra={"slug": spec["slug"], "is_enabled": desired},
+                )
+                row.is_enabled = desired
+                await session.flush()
+
+        if row.is_local and row.api_base != spec["api_base"]:
             # Self-heal: the correct endpoint differs between a native run and a
             # containerised one, and a stale row would silently route every
             # local inference at the wrong host.
@@ -165,6 +165,55 @@ async def _seed_providers(session: AsyncSession) -> dict[str, LlmProvider]:
             await session.flush()
         result[spec["slug"]] = row
     return result
+
+
+async def _remove_unused_placeholders(
+    session: AsyncSession, providers: dict[str, LlmProvider]
+) -> int:
+    """Drop placeholder models nothing has ever run against.
+
+    A model row referenced by an execution is never deleted: traceability
+    requires that a past result still resolves to the model it used. Only
+    untouched placeholders go.
+    """
+    provider = providers.get("lm_studio")
+    if provider is None:
+        return 0
+
+    candidates = (
+        await session.execute(
+            select(LlmModel).where(
+                LlmModel.provider_id == provider.id,
+                LlmModel.model_key.in_(LEGACY_PLACEHOLDER_KEYS),
+            )
+        )
+    ).scalars().all()
+
+    removed = 0
+    for model in candidates:
+        used = (
+            await session.execute(
+                select(func.count(Execution.id)).where(Execution.llm_model_id == model.id)
+            )
+        ).scalar_one()
+        if used:
+            logger.info(
+                "placeholder_kept",
+                extra={"model": model.model_key, "executions": used},
+            )
+            continue
+
+        # Configurations pointing at it go too; they are equally fictional.
+        await session.execute(
+            delete(SamplingConfiguration).where(SamplingConfiguration.model_id == model.id)
+        )
+        await session.delete(model)
+        removed += 1
+        logger.info("placeholder_removed", extra={"model": model.model_key})
+
+    if removed:
+        await session.flush()
+    return removed
 
 
 async def _seed_models(session: AsyncSession, providers: dict[str, LlmProvider]) -> list[LlmModel]:
@@ -231,7 +280,7 @@ async def _resolve_artefact_version(
         "generated_prompt_drifted",
         extra={
             "artefact": model_cls.__name__,
-            "name": name,
+            "artefact_name": name,
             "declared_version": version,
             "stored_under": suffixed,
         },
@@ -340,6 +389,48 @@ async def _seed_prompts(session: AsyncSession) -> None:
         logger.info("seeded_dynamic_template", extra={"version": version})
 
 
+async def _backfill_missing_configurations(session: AsyncSession) -> int:
+    """Give every model at least one way to be run.
+
+    Models imported before the import step created configurations are otherwise
+    unusable: `canRun` requires a configuration, so the Run button stays
+    disabled with nothing on screen to explain it.
+    """
+    models = (
+        await session.execute(
+            select(LlmModel).where(
+                ~select(SamplingConfiguration.id)
+                .where(SamplingConfiguration.model_id == LlmModel.id)
+                .exists()
+            )
+        )
+    ).scalars().all()
+
+    for model in models:
+        session.add(
+            SamplingConfiguration(
+                name=f"Deterministic · {model.display_name}",
+                description="Greedy baseline: temperature 0, fixed seed.",
+                model_id=model.id,
+                temperature=0.0,
+                top_p=1.0,
+                max_tokens=64,
+                seed=42,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
+                stop_sequences=[],
+                response_format="json_schema" if model.supports_json_schema else "json_object",
+                extra_params={},
+                is_favorite=True,
+            )
+        )
+        logger.info("backfilled_configuration", extra={"model": model.model_key})
+
+    if models:
+        await session.flush()
+    return len(models)
+
+
 async def _seed_configurations(session: AsyncSession, models: list[LlmModel]) -> None:
     """A deterministic default per model.
 
@@ -367,7 +458,10 @@ async def _seed_configurations(session: AsyncSession, models: list[LlmModel]) ->
                 temperature=0.0,
                 top_p=1.0,
                 top_k=None,
-                max_tokens=1024,
+                # The reply is a command line: one to four tokens. 64 is
+                # ample headroom, and every token beyond it is budget taken
+                # from the EMG matrix.
+                max_tokens=64,
                 seed=42 if model.supports_seed else None,
                 frequency_penalty=0.0,
                 presence_penalty=0.0,
@@ -382,9 +476,11 @@ async def seed() -> None:
     configure_logging()
     async with AsyncSessionLocal() as session:
         providers = await _seed_providers(session)
+        await _remove_unused_placeholders(session, providers)
         models = await _seed_models(session, providers)
         await _seed_prompts(session)
         await _seed_configurations(session, models)
+        await _backfill_missing_configurations(session)
         await session.commit()
     logger.info("seed_complete")
 
