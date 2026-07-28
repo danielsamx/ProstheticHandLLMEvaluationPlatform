@@ -19,6 +19,7 @@ from app.models.prompts import (
 )
 from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
+from app.prompts.dynamic_prompt import overriding_template
 from app.prompts.technical_context import build_technical_context
 from app.schemas.api import (
     DynamicTemplateIn,
@@ -221,7 +222,13 @@ async def preview_prompt(
         technical_context=payload.technical_context_override
         or (context_row.content if context_row else None),
         dynamic_template=payload.dynamic_template_override
-        or (template_row.content if template_row else None),
+        or overriding_template(template_row),
+        # These were accepted by the schema and then dropped on the floor: the
+        # preview always rendered the full matrix whatever the researcher had
+        # selected. A preview that does not match what will be sent is worse
+        # than no preview, because it is trusted.
+        dynamic_content=payload.dynamic_content,
+        matrix_max_rows=payload.matrix_max_rows,
         limit_profile=profile,
         experiment_type=payload.experiment_type,
         subject_ref=payload.subject_ref,
@@ -242,7 +249,10 @@ async def preview_prompt(
         technical_context=assembled.technical_context,
         dynamic_prompt=assembled.dynamic_prompt,
         context_window=context_window,
-        matrix_rows=min(payload.window.sample_count, 64),
+        # What was actually rendered, not a guess. The hard-coded 64 here was a
+        # leftover from the era of a fixed row cap, and it made the budget
+        # advice quote a row count that had nothing to do with the request.
+        matrix_rows=assembled.metadata.get("matrix_rows_sent"),
     )
 
     return PromptPreviewOut(
@@ -263,6 +273,8 @@ async def preview_prompt(
         context_window=budget.context_window,
         fits_context=budget.fits,
         budget_advice=budget.advice,
+        matrix_rows_sent=assembled.metadata.get("matrix_rows_sent") or 0,
+        dynamic_content=assembled.metadata.get("dynamic_content", "matrix"),
     )
 
 

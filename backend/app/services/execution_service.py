@@ -49,7 +49,7 @@ from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services.metrics_service import compute_metrics
 from app.domain.protocol import normalise_expected_command
-from app.prompts.dynamic_prompt import DynamicContent
+from app.prompts.dynamic_prompt import DynamicContent, overriding_template
 from app.schemas.llm_output import response_json_schema
 from app.validation.pipeline import validate_response
 from app.validation.results import ValidationReport
@@ -159,7 +159,7 @@ async def run_execution(
         technical_context=technical_context_override
         or (context_version.content if context_version else None),
         dynamic_template=dynamic_template_override
-        or (template_version.content if template_version else None),
+        or overriding_template(template_version),
         dynamic_content=dynamic_content,
         matrix_max_rows=matrix_max_rows,
         limit_profile=profile,

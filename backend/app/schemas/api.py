@@ -250,6 +250,11 @@ class PromptPreviewOut(BaseModel):
     context_window: int | None = None
     fits_context: bool = True
     budget_advice: list[str] = Field(default_factory=list)
+    #: What the preview actually rendered. Echoed back so the panel can state
+    #: "64 of 404 rows" from the server's own answer rather than re-deriving it
+    #: and risking a figure that disagrees with the text beside it.
+    matrix_rows_sent: int = 0
+    dynamic_content: str = "matrix"
 
 
 # ═════════════════════════════════════════════════════════════════════════════

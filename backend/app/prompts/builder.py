@@ -35,6 +35,7 @@ from app.prompts.dynamic_prompt import (
     DEFAULT_MATRIX_MAX_ROWS,
     DynamicContent,
     render_dynamic_prompt,
+    rendered_row_count,
 )
 from app.prompts.system_prompt import default_system_prompt
 from app.prompts.technical_context import build_technical_context
@@ -157,8 +158,12 @@ def build_prompt(
             # over the same window with different content are different
             # experiments, and the record has to say which one happened.
             "dynamic_content": DynamicContent(dynamic_content).value,
-            "matrix_rows_sent": window.sample_count if matrix_max_rows is None
-            else min(window.sample_count, matrix_max_rows),
+            "matrix_rows_sent": rendered_row_count(
+                window,
+                content=dynamic_content,
+                max_rows=matrix_max_rows,
+                template=dynamic_template,
+            ),
         },
     )
     assembled.system_prompt_sha256 = sha256(system_text)

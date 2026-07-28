@@ -152,6 +152,72 @@ def rows_that_fit(available_tokens: int) -> int:
     return max(0, int(available_tokens / APPROX_TOKENS_PER_ROW))
 
 
+def rendered_row_count(
+    window: EmgWindow,
+    *,
+    content: DynamicContent | str = DEFAULT_CONTENT,
+    max_rows: int | None = DEFAULT_MATRIX_MAX_ROWS,
+    template: str | None = None,
+) -> int:
+    """How many matrix rows the prompt will actually contain.
+
+    Not ``min(sample_count, max_rows)``. Decimation uses a uniform stride, so a
+    cap of 64 on a 100-row window yields 50 rows, not 64 — the stride is 2 and
+    there is no half-step. Reporting the requested figure instead of the real
+    one would put a number in the execution record that no prompt ever had.
+    """
+    mode = DynamicContent(content) if not isinstance(content, DynamicContent) else content
+    body = template if not is_builtin_template(template) else None
+    body = body or TEMPLATES[mode]
+    if "{matrix_block}" not in body:
+        return 0
+    if max_rows is None or max_rows >= window.sample_count:
+        return window.sample_count
+    return len(downsample(window.samples, max_rows)[0])
+
+
+def overriding_template(row) -> str | None:
+    """The stored template, but only when it should defeat the mode switch.
+
+    A `dynamic_prompt_templates` row arrives on every request, because the lab
+    selects the active artefact automatically. Treating any of them as an
+    override means the Matrix / Features / Both switch does nothing: the stored
+    body wins and renders whatever it happens to reference.
+
+    The rule is ownership, read from the row itself: a **system default** is one
+    of the platform's own renderings and the mode switch is the way to choose
+    between them, so it never overrides. A row a researcher authored is a
+    deliberate decision and always does.
+
+    This deliberately does *not* compare the text against the built-in
+    templates. That was the first attempt and it was wrong in the one place it
+    mattered — a database seeded by an earlier version holds an older default,
+    whose text matches nothing current, so it was misread as hand-written and
+    went on forcing the matrix into every prompt including feature-only ones.
+    A flag on the row survives every version of the text; a string comparison
+    only survives the current one.
+    """
+    if row is None or getattr(row, "is_system_default", False):
+        return None
+    return row.content
+
+
+def is_builtin_template(template: str | None) -> bool:
+    """Is this one of the renderings the mode switch already selects?
+
+    The seed files the default rendering as a stored artefact, and the lab
+    selects the active artefact automatically. So a template string arrives on
+    every request whether or not the researcher ever touched one — and treating
+    any template as an override meant the mode switch did nothing at all:
+    choosing "features" still rendered the matrix, because the stored
+    "{matrix_block}" won.
+
+    A template identical to a built-in rendering is not an override. Only a
+    template someone actually wrote is.
+    """
+    return template is not None and template in set(TEMPLATES.values())
+
+
 def render_dynamic_prompt(
     window: EmgWindow,
     *,
@@ -168,30 +234,34 @@ def render_dynamic_prompt(
 ) -> str:
     """Assemble the dynamic block for one execution.
 
-    An explicit ``template`` overrides ``content``: a stored template is a
-    deliberate choice by the researcher, and silently replacing it with a
-    built-in one would make the saved artefact a lie.
+    A *custom* ``template`` overrides ``content``: a hand-written template is a
+    deliberate choice, and silently replacing it with a built-in rendering
+    would make the saved artefact a lie. A template that merely equals one of
+    the built-in renderings is not an override — see `is_builtin_template`.
 
     ``subject_ref`` remains a pseudonymous identifier only. No direct personal
     data is ever placed in a prompt or persisted alongside one.
     """
     mode = DynamicContent(content) if not isinstance(content, DynamicContent) else content
+    custom = None if is_builtin_template(template) else template
+    body = custom or TEMPLATES[mode]
 
-    # The matrix is only rendered when it is going to be used. On a 4,000-row
-    # recording formatting it costs real time, and doing that work to throw it
-    # away would slow down exactly the feature-only runs that need it least.
+    # Render only the blocks the body actually references.
+    #
+    # This is what makes the mode switch real: under "features" the matrix is
+    # never built, so it cannot leak into the prompt. On a 4,000-row recording
+    # it also saves formatting work that would only be discarded.
+    wants_matrix = "{matrix_block}" in body
+    wants_features = "{feature_block}" in body
+
     matrix_block, rendered_rows, factor = (
         render_matrix_block(window, max_rows=matrix_max_rows, precision=matrix_precision)
-        if mode in (DynamicContent.MATRIX, DynamicContent.BOTH) or template
-        else ("", 0, 1)
+        if wants_matrix else ("", 0, 1)
     )
     feature_block = (
         render_feature_block(window, include_sites=include_sites)
-        if mode in (DynamicContent.FEATURES, DynamicContent.BOTH) or template
-        else ""
+        if wants_features else ""
     )
-
-    body = template or TEMPLATES[mode]
 
     # A custom template may reference fields no built-in one uses. `format_map`
     # with a forgiving mapping leaves an unknown placeholder as written instead

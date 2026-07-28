@@ -270,3 +270,181 @@ def test_technical_context_documents_the_c_ambiguity():
     wrong way closes a fist when asked to extend one finger."""
     context = build_technical_context()
     assert "Bare C=CLOSE, C400=middle finger." in context
+
+
+# ── The mode switch has to actually switch ──────────────────────────────────
+
+
+def test_a_stored_default_template_does_not_override_the_mode():
+    """The bug this guards: the seed files the default rendering as a stored
+    artefact and the lab selects it automatically, so a template arrived on
+    every request. Treating any template as an override meant the mode switch
+    did nothing — "features" still rendered the matrix, because the stored
+    "{matrix_block}" won.
+    """
+    from app.prompts.dynamic_prompt import TEMPLATES
+
+    window = synthesise_window("rest", seed=1, samples=100)
+    stored = TEMPLATES[DynamicContent.MATRIX]
+
+    features = build_prompt(
+        window, dynamic_content=DynamicContent.FEATURES, dynamic_template=stored
+    ).dynamic_prompt
+
+    assert not any(line.startswith("[") for line in features.splitlines())
+    assert "| CH1 |" in features
+
+
+def test_a_hand_written_template_still_wins():
+    """The rule is "a template equal to a built-in rendering is not an
+    override", not "templates are ignored". A researcher's own template is a
+    deliberate choice and must survive."""
+    window = synthesise_window("rest", seed=1, samples=8)
+    rendered = build_prompt(
+        window,
+        dynamic_content=DynamicContent.FEATURES,
+        dynamic_template="CUSTOM {matrix_block}",
+    ).dynamic_prompt
+
+    assert rendered.startswith("CUSTOM ")
+    assert "| CH1 |" not in rendered
+
+
+def test_the_row_cap_is_honoured_alongside_a_stored_template():
+    """The second half of the same bug: a cap of 64 on a 100-row window still
+    sent all 100, because the stored template path skipped the cap entirely."""
+    from app.prompts.dynamic_prompt import TEMPLATES
+
+    window = synthesise_window("rest", seed=1, samples=100)
+    prompt = build_prompt(
+        window,
+        dynamic_content=DynamicContent.MATRIX,
+        dynamic_template=TEMPLATES[DynamicContent.MATRIX],
+        matrix_max_rows=64,
+    )
+    rows = [line for line in prompt.dynamic_prompt.splitlines() if line.startswith("[")]
+    assert len(rows) <= 64
+    assert prompt.metadata["matrix_rows_sent"] == len(rows)
+
+
+def test_features_mode_never_builds_the_matrix_at_all():
+    """Not merely omitted from the output — never rendered. On a 4,000-row
+    window, formatting it only to discard it would be the slowest possible way
+    to run the cheapest condition."""
+    from app.prompts import dynamic_prompt as module
+
+    window = synthesise_window("rest", seed=1, samples=64)
+    calls = []
+    original = module.render_matrix_block
+    module.render_matrix_block = lambda *a, **k: (calls.append(1), original(*a, **k))[1]
+    try:
+        module.render_dynamic_prompt(window, content=DynamicContent.FEATURES)
+    finally:
+        module.render_matrix_block = original
+
+    assert calls == []
+
+
+def test_the_cap_survives_the_exact_payload_the_browser_sends():
+    """End to end through the request schema, because every layer between the
+    field and the renderer has dropped this value at least once: the schema
+    accepted it and the endpoint ignored it, then the stored template bypassed
+    it. This asserts the whole path, not one hop of it."""
+    from app.schemas.api import PromptPreviewIn
+
+    window = synthesise_window("power_grasp", seed=1, samples=404)
+    payload = PromptPreviewIn.model_validate({
+        "window": {"samples": window.samples, "sample_rate_hz": window.sample_rate_hz},
+        "handedness": "right",
+        "dynamic_content": "matrix",
+        "matrix_max_rows": 32,
+    })
+
+    prompt = build_prompt(
+        payload.window,
+        dynamic_content=payload.dynamic_content,
+        matrix_max_rows=payload.matrix_max_rows,
+    )
+    rows = [line for line in prompt.dynamic_prompt.splitlines() if line.startswith("[")]
+
+    assert len(rows) == 32
+    assert prompt.metadata["matrix_rows_sent"] == 32
+
+
+def test_a_capped_excerpt_spans_the_whole_window():
+    """Decimation, not truncation. The first 32 rows of a 404-row recording are
+    the pre-movement baseline; a model shown only those has been given no
+    movement to read at all."""
+    from app.prompts.dynamic_prompt import render_matrix_block
+
+    window = synthesise_window("power_grasp", seed=1, samples=404)
+    text, rendered, factor = render_matrix_block(window, max_rows=32)
+
+    assert rendered == 32
+    assert factor > 1
+
+    # The last printed row must come from late in the recording, not row 32.
+    printed = text.splitlines()
+    assert printed[-1] != render_matrix_block(window, max_rows=None)[0].splitlines()[31]
+
+
+# ── A stored template must never defeat the mode switch ─────────────────────
+
+
+class _Row:
+    """Stand-in for a dynamic_prompt_templates row."""
+
+    def __init__(self, content: str, is_system_default: bool):
+        self.content = content
+        self.is_system_default = is_system_default
+
+
+def test_a_template_seeded_by_an_older_version_still_does_not_override():
+    """The bug behind "Features still sends the matrix".
+
+    A database seeded before the mode switch existed holds an older default
+    template whose text matches none of the current built-ins. The first fix
+    compared the text, so that row was misread as hand-written and went on
+    forcing the matrix into every prompt — including feature-only ones.
+
+    Ownership is read from the row instead. A flag survives every version of
+    the text; a string comparison only survives the current one.
+    """
+    from app.prompts.dynamic_prompt import overriding_template
+
+    old_seeded = _Row("# EXECUTION REQUEST\n\n{matrix_block}\n\n{feature_block}\n", True)
+    assert overriding_template(old_seeded) is None
+
+    window = synthesise_window("rest", seed=1, samples=404)
+    rendered = build_prompt(
+        window,
+        dynamic_content=DynamicContent.FEATURES,
+        dynamic_template=overriding_template(old_seeded),
+    ).dynamic_prompt
+
+    assert not any(line.startswith("[") for line in rendered.splitlines())
+    assert "| CH1 |" in rendered
+
+
+def test_a_researcher_authored_template_still_overrides():
+    """The rule is ownership, not "templates are ignored". A row somebody wrote
+    is a deliberate decision and has to survive."""
+    from app.prompts.dynamic_prompt import overriding_template
+
+    authored = _Row("MINE {feature_block}", False)
+    assert overriding_template(authored) == "MINE {feature_block}"
+
+    window = synthesise_window("rest", seed=1, samples=32)
+    rendered = build_prompt(
+        window,
+        dynamic_content=DynamicContent.MATRIX,
+        dynamic_template=overriding_template(authored),
+    ).dynamic_prompt
+
+    assert rendered.startswith("MINE ")
+
+
+def test_no_stored_row_at_all_falls_back_to_the_mode():
+    from app.prompts.dynamic_prompt import overriding_template
+
+    assert overriding_template(None) is None
