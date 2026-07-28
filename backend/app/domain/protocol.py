@@ -176,3 +176,26 @@ def describe_command_set() -> str:
     for command, gesture in GESTURES.items():
         lines.append(f"  {command.value}  -> {gesture.name:<13} - {gesture.description}")
     return "\n".join(lines)
+
+
+def normalise_expected_command(command: str | None) -> str | None:
+    """Tidy a hand-typed expected command without interpreting it.
+
+    Upper-cased and stripped of spaces around separators, because `a320, b180`
+    and `A320,B180` drive the hand identically and a researcher should not have
+    to match the wire format exactly to get a correct comparison.
+
+    Deliberately not parsed or validated. An expected command that turns out to
+    be malformed is the researcher's own mistake to see in the dashboard, and
+    rejecting it at entry would stop them recording a run while they work out
+    what the right answer is.
+
+    Lives here rather than in the execution service because it is a statement
+    about command syntax, and because the service cannot be imported without
+    litellm — which would make this untestable in any environment lacking a
+    heavyweight optional dependency it does not use.
+    """
+    if command is None:
+        return None
+    cleaned = ",".join(part.strip() for part in command.strip().upper().split(","))
+    return cleaned or None

@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.domain.hand_spec import Handedness, LimitProfileId, get_limit_profile
 from app.prompts.builder import build_prompt
 from app.prompts.system_prompt import SYSTEM_PROMPT
-from app.prompts.dynamic_prompt import DEFAULT_MATRIX_MAX_ROWS
+from app.prompts.dynamic_prompt import DynamicContent
 from app.prompts.technical_context import build_technical_context
 from app.services.emg_service import synthesise_window
 
@@ -47,43 +47,91 @@ def test_identical_inputs_produce_identical_hashes():
     )
 
 
-def test_the_dynamic_block_is_the_matrix_and_nothing_else():
-    """Every line is a matrix row. No headings, no metadata, no feature table.
+def test_the_matrix_mode_sends_every_row_of_the_window():
+    """N rows x 8 columns, complete.
 
-    The features are still computed and still stored on the window; they are
-    simply no longer handed to the model. A feature table is a preprocessing
-    step, and the question this platform asks is what an LLM does with raw EMG.
+    The cap used to be 32 printed rows, so an imported 404-row recording
+    reached the model as an eighth of itself while the interface reported the
+    full count. Nothing warned about the difference, which made it capable of
+    invalidating a conclusion without anyone noticing.
     """
-    window = synthesise_window("rest", seed=3, samples=64)
-    block = build_prompt(window).dynamic_prompt
+    window = synthesise_window("rest", seed=3, samples=404)
+    block = build_prompt(window, dynamic_content=DynamicContent.MATRIX).dynamic_prompt
 
     lines = block.splitlines()
-    assert lines, "the block must not be empty"
+    assert len(lines) == window.sample_count == 404
     assert all(ln.startswith("[") and ln.endswith("]") for ln in lines)
     assert all(ln.count(",") == 7 for ln in lines)
-    assert len(lines) <= min(window.sample_count, DEFAULT_MATRIX_MAX_ROWS)
 
-    # The derived summary is gone from the prompt.
+    # Matrix mode carries no descriptors and no metadata.
     for token in ("RMS", "flexor_ratio", "CH1", "Hand:", "Acquisition"):
         assert token not in block
 
 
-def test_long_windows_are_decimated_without_announcing_it_in_the_prompt():
-    """There is nowhere to put a note under a matrix-only contract, so the
-    decimation factor is returned to the caller and recorded on the execution
-    instead — where it stays queryable rather than buried in prompt text."""
+def test_the_features_mode_sends_descriptors_and_no_matrix():
+    window = synthesise_window("power_grasp", seed=3, samples=404)
+    block = build_prompt(window, dynamic_content=DynamicContent.FEATURES).dynamic_prompt
+
+    assert not any(ln.startswith("[") for ln in block.splitlines())
+    for index in range(1, 9):
+        assert f"| CH{index} |" in block
+    assert "flexor_ratio" in block
+
+
+def test_the_both_mode_carries_the_matrix_and_then_the_descriptors():
+    window = synthesise_window("power_grasp", seed=3, samples=64)
+    block = build_prompt(window, dynamic_content=DynamicContent.BOTH).dynamic_prompt
+
+    matrix_rows = [ln for ln in block.splitlines() if ln.startswith("[")]
+    assert len(matrix_rows) == window.sample_count
+    assert "| CH1 |" in block
+    assert block.index("[") < block.index("| CH1 |"), "matrix first, then the summary"
+
+
+def test_the_three_modes_produce_three_different_prompts():
+    """They are three different experiments, so they must not collide in the
+    record: a shared hash would make them indistinguishable in the history."""
+    window = synthesise_window("rest", seed=3, samples=32)
+    hashes = {
+        build_prompt(window, dynamic_content=mode).dynamic_prompt_sha256
+        for mode in DynamicContent
+    }
+    assert len(hashes) == 3
+
+
+def test_the_mode_and_the_row_count_are_recorded_on_the_prompt():
+    """A run that saw 404 rows and one that saw 32 are not comparable, and the
+    difference is invisible unless the record says which happened."""
+    window = synthesise_window("rest", seed=3, samples=404)
+
+    full = build_prompt(window, dynamic_content=DynamicContent.MATRIX)
+    assert full.metadata["dynamic_content"] == "matrix"
+    assert full.metadata["matrix_rows_sent"] == 404
+
+    capped = build_prompt(window, matrix_max_rows=32)
+    assert capped.metadata["matrix_rows_sent"] == 32
+    assert len(capped.dynamic_prompt.splitlines()) == 32
+
+
+def test_a_cap_still_decimates_rather_than_truncates():
+    """A capped view must span the whole window. Printing the first 32 rows
+    would show the model the pre-movement baseline and nothing else."""
     from app.prompts.dynamic_prompt import render_matrix_block
 
     window = synthesise_window("power_grasp", seed=3, samples=1000)
-    block = build_prompt(window).dynamic_prompt
-    lines = block.splitlines()
-
-    assert len(lines) < window.sample_count
-    assert len(lines) <= DEFAULT_MATRIX_MAX_ROWS
-
-    _, rendered, factor = render_matrix_block(window)
-    assert rendered == len(lines)
+    _, rendered, factor = render_matrix_block(window, max_rows=32)
+    assert rendered == 32
     assert factor > 1
+
+
+def test_the_default_mode_is_the_raw_matrix():
+    """The condition the platform exists to measure, and what a reader should
+    assume when a run does not say otherwise."""
+    window = synthesise_window("rest", seed=3, samples=16)
+    assert (
+        build_prompt(window).dynamic_prompt
+        == build_prompt(window, dynamic_content=DynamicContent.MATRIX).dynamic_prompt
+    )
 
 
 def test_the_hand_no_longer_appears_anywhere_in_the_prompt():
@@ -153,13 +201,59 @@ def test_the_output_contract_states_every_field_the_schema_accepts():
         assert f'"{letter}"' in context
 
 
-def test_the_default_prompt_fits_a_small_local_context():
-    """8k is LM Studio's usual default, and a 3B model is a realistic target.
-    A prompt that cannot fit there is not a prompt this platform can use."""
+def test_a_full_recording_overflows_a_small_context_and_says_so_usefully():
+    """The honest cost of sending the whole matrix, stated before the request.
+
+    404 rows will not fit an 8k context. That is not a bug to be hidden by
+    silently decimating — it is a fact the researcher has to decide about, so
+    the budget names the two levers that exist: fewer rows, or a bigger
+    context. The advice quotes a row count rather than a token count, because
+    rows are the thing they can actually set.
+    """
     from app.prompts.budget import check
 
     window = synthesise_window("power_grasp", seed=1, samples=404)
     prompt = build_prompt(window)
+
+    report = check(
+        system_prompt=prompt.system_prompt,
+        technical_context=prompt.technical_context,
+        dynamic_prompt=prompt.dynamic_prompt,
+        context_window=8192,
+        matrix_rows=404,
+    )
+    assert not report.fits
+    advice = " ".join(report.advice)
+    assert "404 rows sent" in advice
+    assert "rows alongside the frozen blocks" in advice
+    assert "features only" in advice
+
+
+def test_features_only_fits_a_small_context_comfortably():
+    """The escape hatch the advice points at has to actually work: the
+    descriptors are a fixed size whatever the recording length."""
+    from app.prompts.budget import check
+
+    window = synthesise_window("power_grasp", seed=1, samples=4000)
+    prompt = build_prompt(window, dynamic_content=DynamicContent.FEATURES)
+
+    report = check(
+        system_prompt=prompt.system_prompt,
+        technical_context=prompt.technical_context,
+        dynamic_prompt=prompt.dynamic_prompt,
+        context_window=8192,
+    )
+    assert report.fits, report.summary()
+    assert report.utilisation < 0.35
+
+
+def test_a_capped_matrix_still_fits_a_small_context():
+    """The other lever: 32 rows is what the prompt used to send, and it still
+    fits, so a researcher on an 8k model is not locked out."""
+    from app.prompts.budget import check
+
+    window = synthesise_window("power_grasp", seed=1, samples=404)
+    prompt = build_prompt(window, matrix_max_rows=32)
 
     report = check(
         system_prompt=prompt.system_prompt,

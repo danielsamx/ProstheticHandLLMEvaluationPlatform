@@ -6,6 +6,7 @@ import { environment } from '@env/environment';
 import { EmgMatrixFormat, EmgWindow, MatrixParseResponse } from '../models/emg.model';
 import { HandSpec, Handedness, LimitProfileId } from '../models/hand.model';
 import {
+  DynamicContent,
   Execution,
   ExecutionStats,
   LabPreset,
@@ -37,6 +38,12 @@ export interface RunExecutionPayload {
   system_prompt_override?: string | null;
   technical_context_override?: string | null;
   dynamic_template_override?: string | null;
+  /** What the dynamic block carries. An experimental variable, not a view. */
+  dynamic_content?: DynamicContent;
+  /** Cap on printed matrix rows; null sends the whole window. */
+  matrix_max_rows?: number | null;
+  /** The answer key. Stored and compared, never placed in a prompt. */
+  expected_serial_command?: string | null;
   limit_profile?: LimitProfileId | null;
   experiment_id?: string | null;
   experiment_type?: string;

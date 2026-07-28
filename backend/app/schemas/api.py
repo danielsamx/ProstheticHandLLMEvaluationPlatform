@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.hand_spec import Handedness, LimitProfileId
+from app.prompts.dynamic_prompt import DynamicContent
 from app.schemas.emg import EmgWindow
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -211,6 +212,15 @@ class PromptPreviewIn(BaseModel):
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
     dynamic_template_override: str | None = None
+    #: What the dynamic block carries: the raw matrix, the derived descriptors,
+    #: or both. An experimental variable, not a display preference.
+    dynamic_content: DynamicContent = DynamicContent.MATRIX
+    #: Cap on printed matrix rows. None (the default) sends the whole window.
+    matrix_max_rows: int | None = Field(default=None, ge=1)
+    #: The command a domain expert says this window should produce. Optional,
+    #: stored verbatim, and compared against what the model returned. It is a
+    #: label, never an input: it is not placed in any prompt.
+    expected_serial_command: str | None = Field(default=None, max_length=128)
     limit_profile: LimitProfileId | None = None
     experiment_type: str = "single_inference"
     subject_ref: str | None = None
@@ -262,6 +272,15 @@ class RunExecutionIn(BaseModel):
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
     dynamic_template_override: str | None = None
+    #: What the dynamic block carries: the raw matrix, the derived descriptors,
+    #: or both. An experimental variable, not a display preference.
+    dynamic_content: DynamicContent = DynamicContent.MATRIX
+    #: Cap on printed matrix rows. None (the default) sends the whole window.
+    matrix_max_rows: int | None = Field(default=None, ge=1)
+    #: The command a domain expert says this window should produce. Optional,
+    #: stored verbatim, and compared against what the model returned. It is a
+    #: label, never an input: it is not placed in any prompt.
+    expected_serial_command: str | None = Field(default=None, max_length=128)
     limit_profile: LimitProfileId | None = None
     experiment_id: uuid.UUID | None = None
     experiment_type: str = "single_inference"
@@ -318,6 +337,9 @@ class MetricsOut(BaseModel):
     schema_compliant: bool
     protocol_compliant: bool
     consistency_compliant: bool | None = None
+    #: NULL when no expected command was given: "not compared" and "compared
+    #: and wrong" are different facts and must not share a value.
+    command_matches_expected: bool | None = None
     within_mechanical_limits: bool
     safety_compliant: bool
     ground_truth_gesture: str | None = None
@@ -380,6 +402,13 @@ class ExecutionOut(BaseModel):
     tokens_per_second: float | None = None
     validation_passed: bool | None = None
     simulator_executed: bool
+    #: What the researcher said this window should produce, and whether the
+    #: model matched it. Both stored on the execution so a row in the dashboard
+    #: is self-contained: the comparison cannot silently change later because
+    #: someone relabelled the window.
+    expected_serial_command: str | None = None
+    dynamic_content: str | None = None
+    matrix_rows_sent: int | None = None
     frozen_context_sha256: str | None = None
     full_prompt_sha256: str | None = None
     created_at: datetime
@@ -439,6 +468,14 @@ class ExecutionStats(BaseModel):
     #: False when the set spans more than one frozen context, in which case the
     #: per-model rows are not a fair comparison.
     comparable: bool = True
+
+    #: Accuracy against the expected commands the researcher supplied.
+    #: `command_labelled` is the denominator and is reported explicitly: an
+    #: accuracy of 1.00 over three runs and over three hundred are different
+    #: claims, and a bare percentage hides which one is on screen.
+    command_labelled: int = 0
+    command_matched: int = 0
+    command_accuracy: float | None = None
 
 
 class ExperimentIn(BaseModel):

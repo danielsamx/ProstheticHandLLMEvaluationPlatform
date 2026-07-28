@@ -13,6 +13,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
@@ -33,8 +34,9 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
-    FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule,
-    MatInputModule, MatSelectModule, MatSlideToggleModule, MatTooltipModule,
+    FormsModule, MatButtonModule, MatButtonToggleModule, MatFormFieldModule,
+    MatIconModule, MatInputModule, MatSelectModule, MatSlideToggleModule,
+    MatTooltipModule,
     EmgMatrixPlot,
   ],
   template: `
@@ -93,6 +95,67 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
             </span>
           }
         </div>
+      </div>
+
+      <!--
+        What the model is shown, and what it is judged against.
+
+        These two belong on the same line because they are the two halves of
+        one experimental setup: the input condition and the answer key. A run
+        is only a measurement when both are decided.
+      -->
+      <div class="flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+        <div>
+          <label class="lab-label">Dynamic block carries</label>
+          <mat-button-toggle-group class="dense-toggle-group"
+                                   [ngModel]="store.dynamicContent()"
+                                   (ngModelChange)="store.dynamicContent.set($event)">
+            <mat-button-toggle value="matrix"
+                               matTooltip="The raw N × 8 sample matrix only. The hardest condition, and the one this platform exists to measure.">
+              EMG matrix
+            </mat-button-toggle>
+            <mat-button-toggle value="features"
+                               matTooltip="The derived per-channel descriptors only (RMS, MAV, ZC, SSC, WL, flexor ratio). An easier task: the signal processing has already been done.">
+              Features
+            </mat-button-toggle>
+            <mat-button-toggle value="both"
+                               matTooltip="Matrix first, then the descriptors. The most information the model can be given.">
+              Both
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+
+        <div class="min-w-[170px] flex-1">
+          <label class="lab-label"
+                 matTooltip="The command this window should produce. Stored with the run and compared against the model's answer. It is never placed in the prompt.">
+            Expected serial command
+          </label>
+          <mat-form-field appearance="outline" class="dense-field w-full">
+            <input matInput placeholder="e.g. C  or  A320,B180"
+                   class="lab-mono"
+                   [ngModel]="store.expectedCommand()"
+                   (ngModelChange)="store.expectedCommand.set($event)" />
+          </mat-form-field>
+        </div>
+
+        <!--
+          The row budget only appears when the matrix is actually being sent and
+          the window is long enough for the choice to matter. Showing it always
+          would put a knob on screen that most runs never need to touch.
+        -->
+        @if (store.dynamicContent() !== 'features' && store.sampleCount() > 64) {
+          <div class="w-28">
+            <label class="lab-label"
+                   matTooltip="Blank sends every row. A cap decimates across the whole window rather than truncating it, so the excerpt still spans the movement.">
+              Rows sent
+            </label>
+            <mat-form-field appearance="outline" class="dense-field w-full">
+              <input matInput type="number" min="1" [placeholder]="store.sampleCount() + ' (all)'"
+                     [ngModel]="store.matrixMaxRows()"
+                     (ngModelChange)="store.matrixMaxRows.set($event === null || $event === '' ? null : +$event)" />
+            </mat-form-field>
+          </div>
+        }
       </div>
 
       <!-- ── Traces ────────────────────────────────────────────────────── -->

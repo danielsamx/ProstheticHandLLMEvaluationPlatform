@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="frontend/src/assets/logo.jpg" alt="Escuela Politécnica Nacional · Facultad de Ingeniería de Sistemas" width="250" height="96">
+<img src="frontend/src/assets/logo.webp" alt="Escuela Politécnica Nacional · Facultad de Ingeniería de Sistemas" width="250" height="96">
 
 # Prosthetic Hand LLM Evaluation Platform
 

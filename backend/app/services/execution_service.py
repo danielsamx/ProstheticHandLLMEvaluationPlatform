@@ -48,6 +48,8 @@ from app.schemas.emg import EmgWindow
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services.metrics_service import compute_metrics
+from app.domain.protocol import normalise_expected_command
+from app.prompts.dynamic_prompt import DynamicContent
 from app.schemas.llm_output import response_json_schema
 from app.validation.pipeline import validate_response
 from app.validation.results import ValidationReport
@@ -71,6 +73,9 @@ async def run_execution(
     system_prompt_override: str | None = None,
     technical_context_override: str | None = None,
     dynamic_template_override: str | None = None,
+    dynamic_content: DynamicContent | str = DynamicContent.MATRIX,
+    matrix_max_rows: int | None = None,
+    expected_serial_command: str | None = None,
     limit_profile_id: str | None = None,
     experiment_id: uuid.UUID | None = None,
     triggered_by_id: uuid.UUID | None = None,
@@ -155,6 +160,8 @@ async def run_execution(
         or (context_version.content if context_version else None),
         dynamic_template=dynamic_template_override
         or (template_version.content if template_version else None),
+        dynamic_content=dynamic_content,
+        matrix_max_rows=matrix_max_rows,
         limit_profile=profile,
         experiment_type=experiment_type,
         subject_ref=subject_ref,
@@ -204,6 +211,12 @@ async def run_execution(
         handedness=handedness.value,
         limit_profile=profile.id.value,
         experiment_type=experiment_type,
+        # Normalised on the way in so the comparison later is not sensitive to
+        # whitespace or case the researcher happened to type. What is stored is
+        # what will be compared, so the record cannot disagree with the verdict.
+        expected_serial_command=normalise_expected_command(expected_serial_command),
+        dynamic_content=DynamicContent(dynamic_content).value,
+        matrix_rows_sent=assembled.metadata.get("matrix_rows_sent"),
         system_prompt_text=assembled.system_prompt,
         technical_context_text=assembled.technical_context,
         dynamic_prompt_text=assembled.dynamic_prompt,
@@ -460,6 +473,7 @@ async def run_execution(
             handedness=handedness,
             profile=profile,
             repetition_group=repetition_group,
+            expected_serial_command=execution.expected_serial_command,
         )
     )
 
@@ -603,3 +617,4 @@ def _stage_to_category(stage: str) -> str:
         "safety": ErrorCategory.SAFETY.value,
     }
     return mapping.get(stage, ErrorCategory.INTERNAL.value)
+

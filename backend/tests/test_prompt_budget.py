@@ -37,20 +37,35 @@ def test_empty_text_costs_nothing():
     assert estimate_tokens("") == 0
 
 
-def test_the_prompt_no_longer_grows_with_the_length_of_the_recording():
-    """The row cap is what makes prompt size predictable. A 32-sample window and
-    a 400-sample window now cost within a few percent of each other, because the
-    longer one is decimated to the same printed height.
+def test_the_prompt_grows_with_the_recording_because_the_whole_matrix_is_sent():
+    """The consequence of sending N rows instead of a fixed excerpt.
 
-    This is the property the 8k context budget depends on: a researcher cannot
-    accidentally overflow a model by loading a longer CSV.
+    A researcher *can* now overflow a model by loading a longer CSV. That is
+    the trade accepted when the cap was removed, and it is preferable to the
+    alternative, which was showing the model an eighth of the data while
+    reporting the full row count.
     """
     small = estimate_tokens(build_prompt(
         synthesise_window("rest", seed=1, samples=32)).dynamic_prompt)
     large = estimate_tokens(build_prompt(
         synthesise_window("rest", seed=1, samples=400)).dynamic_prompt)
 
-    assert abs(large - small) / small < 0.10
+    assert large > small * 10
+
+
+def test_the_features_block_does_not_grow_with_the_recording():
+    """Eight rows of descriptors whatever the window length — which is what
+    makes features-only a usable fallback on a small context."""
+    from app.prompts.dynamic_prompt import DynamicContent
+
+    small = estimate_tokens(build_prompt(
+        synthesise_window("rest", seed=1, samples=32),
+        dynamic_content=DynamicContent.FEATURES).dynamic_prompt)
+    large = estimate_tokens(build_prompt(
+        synthesise_window("rest", seed=1, samples=4000),
+        dynamic_content=DynamicContent.FEATURES).dynamic_prompt)
+
+    assert abs(large - small) / small < 0.15
 
 
 # ── Budget ──────────────────────────────────────────────────────────────────
@@ -63,14 +78,16 @@ def _report(samples: int = 404, context_window: int | None = 8192):
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
         context_window=context_window,
+        matrix_rows=prompt.metadata["matrix_rows_sent"],
     )
 
 
-def test_the_default_prompt_fits_an_8k_context():
-    """8k is LM Studio's usual default and a 3B model is a realistic target."""
+def test_the_frozen_blocks_stay_a_small_fraction_of_a_small_context():
+    """The two blocks sent on every single run. Whatever the matrix costs, these
+    are the fixed overhead subtracted from it, so they have to stay cheap."""
     _, report = _report()
-    assert report.fits, report.summary()
-    assert report.utilisation < 0.9
+    fixed = report.breakdown["system_prompt"] + report.breakdown["technical_context"]
+    assert fixed < 0.25 * 8192, fixed
 
 
 def test_an_oversized_prompt_is_flagged_with_advice():
@@ -100,14 +117,13 @@ def test_a_large_completion_reserve_is_called_out():
     assert any("reserved for the reply" in line for line in report.advice)
 
 
-def test_the_matrix_block_is_the_same_size_whatever_the_recording_length():
-    """A 4,000-sample recording must cost no more prompt than a 64-sample one."""
-    sizes = []
-    for samples in (64, 404, 4000):
-        _, report = _report(samples=samples)
-        sizes.append(report.breakdown["dynamic_prompt"])
-
-    assert max(sizes) - min(sizes) < 0.10 * min(sizes), sizes
+def test_the_advice_names_a_row_count_the_researcher_can_act_on():
+    """"10,286 tokens over budget" is not actionable; "this context holds about
+    159 of your 404 rows" is. The number has to be in the units of the control
+    that exists."""
+    _, report = _report(samples=404, context_window=8192)
+    assert not report.fits
+    assert any("rows alongside the frozen blocks" in line for line in report.advice)
 
 
 def test_an_unknown_context_window_is_not_reported_as_a_failure():
@@ -139,10 +155,10 @@ def test_completion_reserve_is_deducted():
 # ── The two size fixes ──────────────────────────────────────────────────────
 
 
-def test_matrix_row_budget_stays_small():
-    """256 rows cost roughly 6,700 tokens on their own — more than an 8k context
-    can hold once the frozen blocks are added."""
-    assert DEFAULT_MATRIX_MAX_ROWS <= 64
+def test_the_matrix_is_uncapped_by_default():
+    """N rows x 8 columns, complete. A default cap would silently discard most
+    of an imported recording."""
+    assert DEFAULT_MATRIX_MAX_ROWS is None
 
 
 def test_the_schema_is_not_sent_twice():

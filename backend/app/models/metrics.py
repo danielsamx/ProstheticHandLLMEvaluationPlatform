@@ -33,6 +33,12 @@ class ExecutionMetric(UUIDMixin, TimestampMixin, Base):
     #: carried one representation, so there was nothing that could disagree and
     #: `false` would assert a failure that never happened.
     consistency_compliant: Mapped[bool | None] = mapped_column(Boolean, index=True)
+    #: Did the normalised command equal the expected one?
+    #:
+    #: NULL when no expected command was supplied. "Not compared" and "compared
+    #: and wrong" must not share a value: averaging them together would let
+    #: unlabelled runs drag an accuracy figure down without appearing in it.
+    command_matches_expected: Mapped[bool | None] = mapped_column(Boolean, index=True)
     within_mechanical_limits: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     safety_compliant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

@@ -114,6 +114,9 @@ export interface ValidationResult {
   issues: ValidationIssue[];
 }
 
+/** What the dynamic prompt block carries for a given execution. */
+export type DynamicContent = 'matrix' | 'features' | 'both';
+
 export interface ExecutionMetrics {
   is_valid_json: boolean;
   is_bare_json: boolean;
@@ -121,6 +124,8 @@ export interface ExecutionMetrics {
   protocol_compliant: boolean;
   /** The serial_command agreed with the intent, gesture and commands beside it. */
   consistency_compliant: boolean;
+  /** null when no expected command was supplied: not compared, not wrong. */
+  command_matches_expected: boolean | null;
   within_mechanical_limits: boolean;
   safety_compliant: boolean;
   ground_truth_gesture: string | null;
@@ -171,6 +176,11 @@ export interface Execution {
   temperature?: number | null;
   validation_passed: boolean | null;
   simulator_executed: boolean;
+  /** The answer key this run was scored against, as it stood at run time. */
+  expected_serial_command: string | null;
+  /** Which rendering of the EMG the model saw, and how much of it. */
+  dynamic_content: DynamicContent | null;
+  matrix_rows_sent: number | null;
   frozen_context_sha256: string | null;
   full_prompt_sha256: string | null;
   created_at: string;
@@ -231,6 +241,14 @@ export interface ExecutionStats {
   top_failure_codes: Record<string, unknown>[];
   /** False when the rows span more than one frozen context. */
   comparable: boolean;
+  /**
+   * Accuracy against the expected commands supplied by the researcher.
+   * `command_labelled` is the denominator and is shown alongside the rate:
+   * 100% of three runs and 100% of three hundred are different claims.
+   */
+  command_labelled: number;
+  command_matched: number;
+  command_accuracy: number | null;
 }
 
 export interface LabPreset {

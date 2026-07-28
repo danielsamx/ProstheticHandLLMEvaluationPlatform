@@ -154,6 +154,26 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     limit_profile: Mapped[str] = mapped_column(String(32), nullable=False)
     experiment_type: Mapped[str] = mapped_column(String(48), default="single_inference", nullable=False)
 
+    #: The command a domain expert says this window should have produced.
+    #:
+    #: Stored on the execution rather than on the EMG window, and copied at run
+    #: time rather than joined. A window's label can be corrected later, and if
+    #: the comparison read through a foreign key then correcting one label would
+    #: silently rewrite the recorded accuracy of every run that used it. An
+    #: execution has to stay a fixed account of what was expected *at the time*.
+    #:
+    #: Never enters a prompt. It is the answer key, and showing the model the
+    #: answer key would make every measurement worthless.
+    expected_serial_command: Mapped[str | None] = mapped_column(String(128))
+
+    #: Which rendering of the EMG the model was shown: matrix, features, both.
+    dynamic_content: Mapped[str] = mapped_column(String(16), default="matrix", nullable=False)
+    #: How many matrix rows actually reached the prompt. The window's own row
+    #: count is not the same number when a cap is applied, and comparing a run
+    #: that saw 404 rows against one that saw 32 without knowing which is which
+    #: is how a result gets misread.
+    matrix_rows_sent: Mapped[int | None] = mapped_column(Integer)
+
     # ── The exact prompt sent ───────────────────────────────────────────────
     system_prompt_text: Mapped[str | None] = mapped_column(Text)
     technical_context_text: Mapped[str | None] = mapped_column(Text)

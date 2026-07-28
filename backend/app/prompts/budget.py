@@ -123,15 +123,24 @@ def check(
             f"(needs at least {total + completion_reserve})."
         )
 
-        # The printed matrix is capped, so it is no longer the dominant block in
-        # a default configuration. Only mention it when it genuinely is.
+        # The matrix is sent whole by default, so on any real recording it is
+        # the dominant block and the only one worth talking about. The advice
+        # names a row count rather than a token count: rows are what the
+        # researcher can actually set.
         largest = max(breakdown, key=breakdown.get)
         if largest == "dynamic_prompt":
+            from app.prompts.dynamic_prompt import rows_that_fit
+
+            fixed = breakdown["system_prompt"] + breakdown["technical_context"]
+            affordable = rows_that_fit(available - fixed)
+            detail = f" ({matrix_rows} rows sent)" if matrix_rows else ""
             advice.append(
-                "The EMG matrix is the largest block"
-                + (f" ({matrix_rows} rows printed)" if matrix_rows else "")
-                + ". Reducing the rows sent saves the most, and the feature table "
-                "is computed from the complete window regardless."
+                f"The EMG matrix is the largest block{detail}. This context "
+                f"holds roughly {affordable} rows alongside the frozen blocks. "
+                "Either cap the rows sent, raise the model's context length, or "
+                "switch the dynamic block to features only — the descriptors are "
+                "computed from the complete window either way, so nothing is "
+                "lost by not printing every sample."
             )
 
         if completion_reserve > 1_024:

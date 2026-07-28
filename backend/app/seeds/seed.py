@@ -24,9 +24,10 @@ from app.models.prompts import (
     TechnicalContextVersion,
 )
 from app.prompts.dynamic_prompt import (
-    DEFAULT_DYNAMIC_TEMPLATE,
+    DEFAULT_CONTENT,
     DYNAMIC_TEMPLATE_NAME,
     DYNAMIC_TEMPLATE_VERSION,
+    TEMPLATES,
 )
 from app.prompts.system_prompt import (
     SYSTEM_PROMPT,
@@ -360,7 +361,12 @@ async def _seed_prompts(session: AsyncSession) -> None:
         )
 
     # ── Block 3 ─────────────────────────────────────────────────────────────
-    digest = _sha(DEFAULT_DYNAMIC_TEMPLATE)
+    # The default mode's template. The other two are selected per execution
+    # rather than stored, because they are built-in renderings rather than a
+    # researcher's saved artefact — filing all three would put rows in the
+    # catalogue that nobody authored and nobody can meaningfully edit.
+    default_template = TEMPLATES[DEFAULT_CONTENT]
+    digest = _sha(default_template)
     version = await _resolve_artefact_version(
         session, DynamicPromptTemplate, DYNAMIC_TEMPLATE_NAME, DYNAMIC_TEMPLATE_VERSION, digest
     )
@@ -370,10 +376,10 @@ async def _seed_prompts(session: AsyncSession) -> None:
             DynamicPromptTemplate(
                 name=DYNAMIC_TEMPLATE_NAME,
                 version=version,
-                content=DEFAULT_DYNAMIC_TEMPLATE,
+                content=default_template,
                 content_sha256=digest,
                 description="Raw EMG matrix plus the derived feature table.",
-                char_count=len(DEFAULT_DYNAMIC_TEMPLATE),
+                char_count=len(default_template),
                 is_active=True,
                 is_system_default=True,
                 required_placeholders=[

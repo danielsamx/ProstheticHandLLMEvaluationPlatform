@@ -30,7 +30,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.hand_spec import Handedness, LimitProfile, get_limit_profile
-from app.prompts.dynamic_prompt import render_dynamic_prompt
+from app.prompts.dynamic_prompt import (
+    DEFAULT_CONTENT,
+    DEFAULT_MATRIX_MAX_ROWS,
+    DynamicContent,
+    render_dynamic_prompt,
+)
 from app.prompts.system_prompt import default_system_prompt
 from app.prompts.technical_context import build_technical_context
 from app.schemas.emg import EmgWindow
@@ -84,6 +89,8 @@ def build_prompt(
     system_prompt: str | None = None,
     technical_context: str | None = None,
     dynamic_template: str | None = None,
+    dynamic_content: DynamicContent | str = DEFAULT_CONTENT,
+    matrix_max_rows: int | None = DEFAULT_MATRIX_MAX_ROWS,
     limit_profile: LimitProfile | None = None,
     experiment_type: str = "single_inference",
     subject_ref: str | None = None,
@@ -114,6 +121,8 @@ def build_prompt(
     )
     dynamic_text = render_dynamic_prompt(
         window,
+        content=dynamic_content,
+        matrix_max_rows=matrix_max_rows,
         handedness=handedness,
         experiment_type=experiment_type,
         subject_ref=subject_ref,
@@ -144,6 +153,12 @@ def build_prompt(
             "experiment_type": experiment_type,
             "emg_source_mode": window.source_mode.value,
             "merge_context_into_system": merge_context_into_system,
+            # Recorded because it changes what the model was shown. Two runs
+            # over the same window with different content are different
+            # experiments, and the record has to say which one happened.
+            "dynamic_content": DynamicContent(dynamic_content).value,
+            "matrix_rows_sent": window.sample_count if matrix_max_rows is None
+            else min(window.sample_count, matrix_max_rows),
         },
     )
     assembled.system_prompt_sha256 = sha256(system_text)

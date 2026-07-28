@@ -63,9 +63,30 @@ import { LabStore } from '@core/services/lab.store';
           </div>
         </div>
 
+        <!--
+          The failure that was invisible.
+
+          The store caught every error into a signal that nothing ever read, so
+          a 500 from the API looked exactly like a database with no rows in it:
+          an empty table saying "nothing matches these filters". A view that
+          cannot distinguish "no data" from "the request failed" will send
+          someone hunting through the wrong half of the system.
+        -->
+        @if (store.error(); as message) {
+          <div class="flex items-start gap-2 rounded-lg border border-pink bg-pink/5 px-4 py-3">
+            <mat-icon class="!h-5 !w-5 !text-[20px] text-pink">error_outline</mat-icon>
+            <div class="min-w-0">
+              <div class="text-sm font-semibold text-pink">Could not load the record</div>
+              <div class="lab-mono mt-0.5 break-words text-[11px] text-ink-600">{{ message }}</div>
+            </div>
+            <button mat-stroked-button class="!ml-auto !h-[30px] !text-[11px]"
+                    (click)="store.refresh()">Retry</button>
+          </div>
+        }
+
         <!-- ── Headline numbers ────────────────────────────────────────── -->
         @if (store.stats(); as stats) {
-          <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
             @for (card of cards(stats); track card.label) {
               <div class="lab-card p-3">
                 <div class="lab-label">{{ card.label }}</div>
@@ -196,7 +217,10 @@ import { LabStore } from '@core/services/lab.store';
                   <th class="px-3 py-2 text-left font-semibold">When</th>
                   <th class="px-3 py-2 text-left font-semibold">Model</th>
                   <th class="px-3 py-2 text-left font-semibold">Outcome</th>
-                  <th class="px-3 py-2 text-left font-semibold">Command</th>
+                  <th class="px-3 py-2 text-left font-semibold">Expected</th>
+                  <th class="px-3 py-2 text-left font-semibold">Got</th>
+                  <th class="px-3 py-2 text-center font-semibold">Match</th>
+                  <th class="px-3 py-2 text-left font-semibold">Input</th>
                   <th class="px-3 py-2 text-left font-semibold">Pattern</th>
                   <th class="px-3 py-2 text-center font-semibold">Clean</th>
                   <th class="px-3 py-2 text-right font-semibold">T</th>
@@ -219,8 +243,49 @@ import { LabStore } from '@core/services/lab.store';
                         {{ outcome(execution).label }}
                       </span>
                     </td>
-                    <td class="lab-mono px-3 py-1.5 text-pink">
-                      {{ execution.movement?.serial_command ?? '—' }}
+                    <!--
+                      Expected and got, side by side, because a table of
+                      commands with no answer key beside them cannot be read as
+                      right or wrong — only as "something happened".
+                    -->
+                    <td class="lab-mono px-3 py-1.5 text-ink-600">
+                      {{ execution.expected_serial_command ?? '—' }}
+                    </td>
+                    <td class="lab-mono px-3 py-1.5"
+                        [class]="matchTone(execution)">
+                      {{ execution.movement?.serial_command
+                         ?? execution.validation_result?.normalised_serial ?? '—' }}
+                    </td>
+                    <td class="px-3 py-1.5 text-center">
+                      <!--
+                        Three states, not two. A blank cell means the run was
+                        never labelled, which is different from being wrong, and
+                        showing a cross for it would invent a failure.
+                      -->
+                      @if (execution.metrics?.command_matches_expected === true) {
+                        <mat-icon class="!h-4 !w-4 !text-[16px] text-navy"
+                                  matTooltip="Matches the expected command">check_circle</mat-icon>
+                      } @else if (execution.metrics?.command_matches_expected === false) {
+                        <mat-icon class="!h-4 !w-4 !text-[16px] text-pink"
+                                  matTooltip="Differs from the expected command">cancel</mat-icon>
+                      } @else {
+                        <span class="text-ink-300"
+                              matTooltip="No expected command was given for this run">–</span>
+                      }
+                    </td>
+                    <!--
+                      What the model was actually shown. A matrix run and a
+                      features run are different experiments, and averaging them
+                      together is the easiest mistake this table could invite.
+                    -->
+                    <td class="px-3 py-1.5">
+                      <span class="lab-chip bg-ink-100 text-ink-600"
+                            [matTooltip]="inputTooltip(execution)">
+                        {{ execution.dynamic_content ?? 'matrix' }}
+                        @if (execution.matrix_rows_sent) {
+                          <span class="lab-mono">· {{ execution.matrix_rows_sent }}r</span>
+                        }
+                      </span>
                     </td>
                     <td class="lab-mono px-3 py-1.5 text-ink-600">
                       {{ execution.metrics?.detected_pattern ?? '—' }}
@@ -252,8 +317,17 @@ import { LabStore } from '@core/services/lab.store';
                     </td>
                   </tr>
                 } @empty {
-                  <tr><td colspan="10" class="px-4 py-8 text-center text-ink-500">
-                    @if (store.loading()) { Loading… } @else { Nothing matches these filters. }
+                  <tr><td colspan="13" class="px-4 py-8 text-center text-ink-500">
+                    @if (store.loading()) {
+                      Loading…
+                    } @else if (store.error()) {
+                      The record could not be loaded — see the error above.
+                    } @else if (!store.executions().length) {
+                      No executions recorded yet. Run one from the laboratory.
+                    } @else {
+                      {{ store.executions().length }} execution(s) loaded, but none
+                      match the current filters.
+                    }
                   </td></tr>
                 }
               </tbody>
@@ -315,6 +389,8 @@ export class DashboardView implements OnInit {
     executions: number; pass_rate: number | null; distinct_models: number;
     mean_latency_ms: number | null; p95_latency_ms: number | null;
     total_tokens: number; total_cost_usd: number; provider_errors: number;
+    command_labelled: number; command_matched: number;
+    command_accuracy: number | null;
   }): { label: string; value: string; note?: string; colour: string }[] {
     return [
       { label: 'Executions', value: String(stats.executions), colour: '#001F3F' },
@@ -323,6 +399,25 @@ export class DashboardView implements OnInit {
         value: stats.pass_rate === null ? '—' : `${(stats.pass_rate * 100).toFixed(0)}%`,
         note: 'cleared all seven stages',
         colour: (stats.pass_rate ?? 0) >= 0.8 ? '#001F3F' : '#D81B60',
+      },
+      {
+        // Passing validation only means the command was well formed and safe.
+        // Whether it was the *right* command is a separate question, and this
+        // is the only card that answers it.
+        //
+        // The denominator is on the card, not just the rate: 100% of two runs
+        // and 100% of two hundred are different claims, and a bare percentage
+        // makes them look identical.
+        label: 'Command accuracy',
+        value: stats.command_accuracy === null
+          ? '—'
+          : `${(stats.command_accuracy * 100).toFixed(0)}%`,
+        note: stats.command_labelled
+          ? `${stats.command_matched}/${stats.command_labelled} labelled runs`
+          : 'no expected commands set',
+        colour: stats.command_accuracy === null
+          ? '#4A657D'
+          : stats.command_accuracy >= 0.8 ? '#001F3F' : '#D81B60',
       },
       { label: 'Models', value: String(stats.distinct_models), colour: '#001F3F' },
       {
@@ -339,6 +434,31 @@ export class DashboardView implements OnInit {
         colour: stats.provider_errors ? '#D81B60' : '#001F3F',
       },
     ];
+  }
+
+  /**
+   * Colour the produced command by whether it matched the answer key.
+   *
+   * Neutral when there was no key. Colouring an unlabelled run would assert a
+   * verdict nobody gave.
+   */
+  protected matchTone(execution: Execution): string {
+    const match = execution.metrics?.command_matches_expected;
+    if (match === true) return 'text-navy font-semibold';
+    if (match === false) return 'text-pink font-semibold';
+    return 'text-ink-600';
+  }
+
+  protected inputTooltip(execution: Execution): string {
+    const rows = execution.matrix_rows_sent;
+    switch (execution.dynamic_content) {
+      case 'features':
+        return 'The model saw only the derived descriptors — the signal processing was done for it.';
+      case 'both':
+        return `The model saw the raw matrix (${rows ?? '?'} rows) and the derived descriptors.`;
+      default:
+        return `The model saw ${rows ?? '?'} rows of raw EMG and nothing else.`;
+    }
   }
 
   protected outcome(execution: Execution): { label: string; tone: string } {

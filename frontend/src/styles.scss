@@ -224,3 +224,25 @@ body {
 }
 .mat-mdc-dialog-title { color: #001f3f; }
 .cdk-overlay-dark-backdrop { background: rgba(0, 31, 63, 0.32); }
+
+// Segmented control for the dynamic-block content. Material's default button
+// toggle is sized for a touch target; in a dense research panel it dwarfs the
+// fields beside it, and this one sits on the same row as two of them.
+.dense-toggle-group {
+  --mat-standard-button-toggle-height: 34px;
+
+  .mat-button-toggle-label-content {
+    padding: 0 12px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 32px;
+  }
+
+  // The selected segment carries the brand navy rather than a grey tint: this
+  // control selects an experimental condition, and which one is active has to
+  // be readable at a glance from across the panel.
+  .mat-button-toggle-checked {
+    background: #001f3f;
+    color: #ffffff;
+  }
+}

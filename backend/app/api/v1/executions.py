@@ -8,10 +8,12 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.db.session import get_session
 from app.models.experiment import Execution
+from app.models.metrics import ExecutionMetric
 from app.models.validation import ValidationIssueRecord, ValidationResult
 from app.schemas.api import (
     ExecutionOut,
@@ -57,6 +59,9 @@ async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_sessi
                 system_prompt_override=payload.system_prompt_override,
                 technical_context_override=payload.technical_context_override,
                 dynamic_template_override=payload.dynamic_template_override,
+                dynamic_content=payload.dynamic_content,
+                matrix_max_rows=payload.matrix_max_rows,
+                expected_serial_command=payload.expected_serial_command,
                 limit_profile_id=payload.limit_profile.value if payload.limit_profile else None,
                 experiment_id=payload.experiment_id,
                 experiment_type=payload.experiment_type,
@@ -152,6 +157,29 @@ async def execution_stats(
         )
     ).all()
 
+    # Accuracy against the researcher's own answer key.
+    #
+    # Counted over labelled runs only. Executions with no expected command are
+    # excluded from the denominator rather than scored as failures: they were
+    # never a test of correctness, and letting them dilute the rate would make
+    # the figure fall every time someone ran an unlabelled window.
+    #
+    # Computed in SQL alongside the other aggregates for the same reason they
+    # are: a rate derived from the page the browser happens to hold changes
+    # whenever the page size does.
+    expected = (
+        await session.execute(
+            select(
+                func.count(ExecutionMetric.id),
+                func.count(ExecutionMetric.id).filter(
+                    ExecutionMetric.command_matches_expected.is_(True)
+                ),
+            )
+            .join(Execution, Execution.id == ExecutionMetric.execution_id)
+            .where(*filters, ExecutionMetric.command_matches_expected.is_not(None))
+        )
+    ).one()
+
     failures = (
         await session.execute(
             select(ValidationIssueRecord.code, func.count())
@@ -185,6 +213,11 @@ async def execution_stats(
         # More than one frozen context means the per-model rows were produced
         # under different conditions and cannot be compared as they stand.
         comparable=(totals[12] or 0) <= 1,
+        command_labelled=expected[0] or 0,
+        command_matched=expected[1] or 0,
+        command_accuracy=(
+            round((expected[1] or 0) / expected[0], 4) if expected[0] else None
+        ),
         by_model=[
             ModelSummary(
                 litellm_model=row[0],
@@ -213,7 +246,22 @@ async def list_executions(
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(Execution).order_by(desc(Execution.created_at)).limit(limit).offset(offset)
+    # `errors` is the one relationship on Execution that is not lazy="joined",
+    # and ExecutionOut serialises it. On rows that came from a SELECT rather
+    # than from this session's identity map, touching it emits a lazy load
+    # outside the greenlet — MissingGreenlet, a 500, and a dashboard that shows
+    # nothing at all. Eager-loading it here is the fix.
+    #
+    # selectinload rather than joinedload: `errors` is a collection, and joining
+    # it alongside the four already-joined relationships would multiply the
+    # result set by the error count and silently break LIMIT.
+    stmt = (
+        select(Execution)
+        .options(selectinload(Execution.errors))
+        .order_by(desc(Execution.created_at))
+        .limit(limit)
+        .offset(offset)
+    )
     if experiment_id:
         stmt = stmt.where(Execution.experiment_id == experiment_id)
     if litellm_model:
@@ -227,7 +275,13 @@ async def list_executions(
 
 @router.get("/{execution_id}", response_model=ExecutionOut)
 async def get_execution(execution_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
-    execution = await session.get(Execution, execution_id)
+    execution = (
+        await session.execute(
+            select(Execution)
+            .options(selectinload(Execution.errors))
+            .where(Execution.id == execution_id)
+        )
+    ).scalars().unique().one_or_none()
     if execution is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Execution not found.")
     return execution

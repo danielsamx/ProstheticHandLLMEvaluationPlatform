@@ -16,6 +16,7 @@ import {
 } from '../models/emg.model';
 import { HandSpec, Handedness, LimitProfileId, MovementFrame } from '../models/hand.model';
 import {
+  DynamicContent,
   Execution,
   LlmModel,
   LmStudioProbe,
@@ -72,6 +73,36 @@ export class LabStore {
   readonly limitProfile = signal<LimitProfileId>('TABLE_5_V3');
   readonly repetitions = signal(1);
   readonly subjectRef = signal<string>('');
+
+  // ── What the model is shown, and what it is scored against ───────────────
+
+  /**
+   * Which rendering of the EMG goes into the dynamic block.
+   *
+   * A real experimental variable rather than a display option: "can a model
+   * read raw EMG?" and "can a model act on extracted features?" are different
+   * questions, and the second is much the easier one because the signal
+   * processing has already been done for it.
+   */
+  readonly dynamicContent = signal<DynamicContent>('matrix');
+
+  /**
+   * Cap on the matrix rows sent; null means the whole window.
+   *
+   * Null by default. The old fixed cap of 32 meant an imported 404-row
+   * recording reached the model as an eighth of itself while the panel
+   * reported the full count.
+   */
+  readonly matrixMaxRows = signal<number | null>(null);
+
+  /**
+   * The command a domain expert says this window should produce.
+   *
+   * Never enters a prompt — it is the answer key. It is stored on the
+   * execution and compared against what the model returned, which is what
+   * turns a run from a demonstration into a measurement.
+   */
+  readonly expectedCommand = signal<string>('');
 
   // ── Decoding parameters (bound to the left panel) ─────────────────────────
   readonly temperature = signal(0);
@@ -663,6 +694,9 @@ export class LabStore {
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
         dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
+        dynamic_content: this.dynamicContent(),
+        matrix_max_rows: this.matrixMaxRows(),
+        expected_serial_command: this.expectedCommand().trim() || null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,
       }));
@@ -742,6 +776,9 @@ export class LabStore {
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
         dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
+        dynamic_content: this.dynamicContent(),
+        matrix_max_rows: this.matrixMaxRows(),
+        expected_serial_command: this.expectedCommand().trim() || null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,
         repetitions: this.repetitions(),

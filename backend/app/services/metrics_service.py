@@ -5,13 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.domain.hand_spec import GESTURES, Actuator, ControlCommand
 from app.domain.kinematics import HandPose, pose_from_gesture
 from app.schemas.emg import EmgWindow
 from app.schemas.llm_output import ProstheticCommand
-from app.services.llm_service import LlmCallResult
+if TYPE_CHECKING:  # pragma: no cover
+    # Only ever an annotation. Importing it for real would drag in
+    # litellm, and with it a heavyweight dependency this module does
+    # not use — which made the metrics untestable without it.
+    from app.services.llm_service import LlmCallResult
 from app.validation.results import ValidationReport, ValidationStage
 
 #: Map a ground-truth label onto the firmware gesture it should produce.
@@ -67,11 +71,12 @@ def _pose_distance(actual: HandPose, reference: HandPose) -> tuple[float, float]
 def compute_metrics(
     *,
     report: ValidationReport,
-    call: LlmCallResult | None,
+    call: "LlmCallResult | None",
     window: EmgWindow,
     handedness,
     profile,
     repetition_group: str | None = None,
+    expected_serial_command: str | None = None,
 ) -> dict[str, Any]:
     """Build the ``execution_metrics`` payload for one execution."""
     command: ProstheticCommand | None = report.parsed_command
@@ -89,6 +94,14 @@ def compute_metrics(
         "protocol_compliant": ValidationStage.PROTOCOL in stages,
         # The two halves of the response described the same decision.
         "consistency_compliant": ValidationStage.CONSISTENCY in stages,
+        # Compared against the normalised frame, not the raw string the model
+        # emitted: `A320, B180` and `A320,B180` drive the hand identically, and
+        # scoring them as different answers would measure formatting rather
+        # than control.
+        "command_matches_expected": (
+            None if not expected_serial_command
+            else report.normalised_serial == expected_serial_command
+        ),
         "within_mechanical_limits": ValidationStage.RANGE in stages
         and ValidationStage.KINEMATIC in stages,
         "safety_compliant": ValidationStage.SAFETY in stages,

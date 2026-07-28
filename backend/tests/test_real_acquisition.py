@@ -65,26 +65,38 @@ def test_the_window_renders_into_a_prompt(raw_matrix):
     assert all(ln.startswith("[") and ln.endswith("]") for ln in lines)
     assert all(ln.count(",") == 7 for ln in lines)
 
-    # 404 rows exceeds the print budget, so the window is decimated.
-    assert 0 < len(lines) < window.sample_count
+    # Every row of the imported recording, not an excerpt of it.
+    assert len(lines) == window.sample_count == 404
 
 
-def test_prompt_from_a_real_recording_fits_an_8k_context(raw_matrix):
-    """The recording that first overflowed the runtime.
+def test_a_real_recording_needs_a_larger_context_and_the_budget_says_which(raw_matrix):
+    """404 rows of real acquisition do not fit an 8k context.
 
-    LM Studio reported `request (16676 tokens) exceeds the available context
-    size (8192 tokens)`. Three things caused it: the full JSON Schema was
-    embedded in the prompt *and* sent as `response_format`, 256 matrix rows were
-    printed, and both frozen blocks were verbose. All fixed; this keeps them so.
+    Previously they did, because only 32 of them were sent. Fitting was a
+    property of the excerpt, not of the recording, and reporting the full row
+    count beside a truncated prompt is the kind of quiet mismatch that survives
+    into a published number.
     """
     from app.prompts.budget import check
 
-    prompt = build_prompt(EmgWindow(samples=raw_matrix, sample_rate_hz=1000))
+    window = EmgWindow(samples=raw_matrix, sample_rate_hz=1000)
+    prompt = build_prompt(window)
 
-    report = check(
+    small = check(
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
         context_window=8192,
+        matrix_rows=window.sample_count,
     )
-    assert report.fits, report.summary()
+    assert not small.fits
+    assert any("context length" in line for line in small.advice)
+
+    # The size the advice points at does hold it.
+    large = check(
+        system_prompt=prompt.system_prompt,
+        technical_context=prompt.technical_context,
+        dynamic_prompt=prompt.dynamic_prompt,
+        context_window=32768,
+    )
+    assert large.fits, large.summary()
