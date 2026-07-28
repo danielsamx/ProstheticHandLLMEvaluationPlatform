@@ -105,22 +105,30 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         is only a measurement when both are decided.
       -->
       <div class="flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
-        <div>
-          <label class="lab-label">Dynamic block carries</label>
+        <div style="display: flex; flex-direction: column;">
+          <label class="lab-label">Dynamic prompt</label>
           <mat-button-toggle-group class="dense-toggle-group"
-                                   [ngModel]="store.dynamicContent()"
-                                   (ngModelChange)="store.dynamicContent.set($event)">
+                                  [ngModel]="store.dynamicContent()"
+                                  (ngModelChange)="store.dynamicContent.set($event)"
+                                  style="height: 38px; min-height: 38px; display: inline-flex; flex-direction: row; flex-wrap: nowrap; width: auto; align-items: center; border-radius: 6px; overflow: hidden;"
+                                  hideSingleSelectionIndicator>
             <mat-button-toggle value="matrix"
-                               matTooltip="The raw N × 8 sample matrix only. The hardest condition, and the one this platform exists to measure.">
-              EMG matrix
+                              matTooltip="The raw N × 8 sample matrix only..."
+                              [matTooltipPosition]="'above'"
+                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
+              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Matrix</span>
             </mat-button-toggle>
             <mat-button-toggle value="features"
-                               matTooltip="The derived per-channel descriptors only (RMS, MAV, ZC, SSC, WL, flexor ratio). An easier task: the signal processing has already been done.">
-              Features
+                              matTooltip="The derived per-channel descriptors only..."
+                              [matTooltipPosition]="'above'"
+                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
+              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Features</span>
             </mat-button-toggle>
             <mat-button-toggle value="both"
-                               matTooltip="Matrix first, then the descriptors. The most information the model can be given.">
-              Both
+                              matTooltip="Matrix first, then the descriptors..."
+                              [matTooltipPosition]="'above'"
+                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
+              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Both</span>
             </mat-button-toggle>
           </mat-button-toggle-group>
         </div>
