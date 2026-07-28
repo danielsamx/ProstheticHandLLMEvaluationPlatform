@@ -1,6 +1,6 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable } from 'rxjs';
+import { Observable, firstValueFrom } from 'rxjs';
 
 import { environment } from '@env/environment';
 import {
@@ -46,6 +46,22 @@ export interface RunExecutionPayload {
 export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly base = environment.apiBase;
+
+  /**
+   * Liveness probe against the API root.
+   *
+   * Deliberately not one of the data endpoints: this answers "is anything
+   * there at all", which is a different question from "did this query work".
+   */
+  async ping(): Promise<boolean> {
+    const root = this.base.replace(/\/api\/v1\/?$/, '');
+    try {
+      await firstValueFrom(this.http.get(`${root}/health`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   // ── Hardware specification ────────────────────────────────────────────────
   getHandSpec(): Observable<HandSpec> {

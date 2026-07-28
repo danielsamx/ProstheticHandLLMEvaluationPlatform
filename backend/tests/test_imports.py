@@ -81,3 +81,103 @@ def test_every_module_parses() -> None:
         except SyntaxError as exc:
             broken.append(f"{module}: {exc}")
     assert not broken, "Syntax errors:\n  " + "\n  ".join(broken)
+
+
+# ── Local runtime addressing ────────────────────────────────────────────────
+
+
+def test_loopback_is_redirected_to_the_docker_host(monkeypatch) -> None:
+    """Inside a container, localhost is the container — not the developer's
+    machine where LM Studio is listening."""
+    import app.core.config as config
+
+    monkeypatch.setattr(config, "running_in_container", lambda: True)
+
+    assert config.redirect_loopback_to_host("http://localhost:1234/v1") == (
+        "http://host.docker.internal:1234/v1"
+    )
+    assert config.redirect_loopback_to_host("http://127.0.0.1:11434") == (
+        "http://host.docker.internal:11434"
+    )
+
+
+def test_non_loopback_addresses_are_left_alone(monkeypatch) -> None:
+    import app.core.config as config
+
+    monkeypatch.setattr(config, "running_in_container", lambda: True)
+
+    for url in (
+        "https://api.openai.com/v1",
+        "http://192.168.1.50:1234/v1",
+        "http://host.docker.internal:1234/v1",
+    ):
+        assert config.redirect_loopback_to_host(url) == url
+
+
+def test_nothing_is_rewritten_outside_a_container(monkeypatch) -> None:
+    """Running the backend natively, localhost is exactly right."""
+    import app.core.config as config
+
+    monkeypatch.setattr(config, "running_in_container", lambda: False)
+    assert config.redirect_loopback_to_host("http://localhost:1234/v1") == (
+        "http://localhost:1234/v1"
+    )
+
+
+def test_env_example_ships_no_active_local_runtime_override() -> None:
+    """Compose interpolates .env when resolving ${VAR:-default}, so an active
+    value here overrides docker-compose.yml. That is what made LM Studio
+    unreachable, so the template must ship the lines commented out."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent.parent
+    text = (root / ".env.example").read_text()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        assert not stripped.startswith("LM_STUDIO_API_BASE="), line
+        assert not stripped.startswith("OLLAMA_API_BASE="), line
+
+
+# ── CORS ────────────────────────────────────────────────────────────────────
+
+
+def test_development_cors_accepts_every_local_origin() -> None:
+    """A browser treats localhost, 127.0.0.1 and the LAN address as distinct
+    origins. An exact-match list turns a harmless URL choice into every request
+    failing at status 0, which reports nothing useful."""
+    import re
+
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None, app_env="development")
+    pattern = settings.cors_origin_regex
+    assert pattern is not None
+
+    for origin in (
+        "http://localhost:4200",
+        "http://127.0.0.1:4200",
+        "http://[::1]:4200",
+        "http://172.18.0.4:4200",
+        "http://192.168.1.20:4200",
+        "http://10.0.0.5:4200",
+    ):
+        assert re.match(pattern, origin), origin
+
+
+def test_development_cors_still_refuses_the_public_internet() -> None:
+    import re
+
+    from app.core.config import Settings
+
+    pattern = Settings(_env_file=None, app_env="development").cors_origin_regex
+    assert pattern is not None
+
+    for origin in ("https://evil.example.com", "http://8.8.8.8:4200", "http://172.15.0.1"):
+        assert not re.match(pattern, origin), origin
+
+
+def test_production_uses_the_explicit_list_only() -> None:
+    from app.core.config import Settings
+
+    assert Settings(_env_file=None, app_env="production").cors_origin_regex is None

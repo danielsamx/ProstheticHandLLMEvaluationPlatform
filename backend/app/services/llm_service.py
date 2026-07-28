@@ -28,7 +28,7 @@ from typing import Any
 import litellm
 from litellm import acompletion
 
-from app.core.config import settings
+from app.core.config import redirect_loopback_to_host, running_in_container, settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -134,7 +134,9 @@ async def call_llm(
     }
 
     if api_base:
-        kwargs["api_base"] = api_base
+        # A provider row seeded before the container knew better may still hold
+        # a loopback address; correct it here so a stale row cannot break a run.
+        kwargs["api_base"] = redirect_loopback_to_host(api_base)
     if api_key:
         kwargs["api_key"] = api_key
     elif is_local:
@@ -253,7 +255,7 @@ async def probe_lm_studio(api_base: str | None = None) -> dict[str, Any]:
     """
     import httpx
 
-    base = (api_base or settings.lm_studio_api_base).rstrip("/")
+    base = redirect_loopback_to_host(api_base or settings.lm_studio_api_base).rstrip("/")
     url = f"{base}/models"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -261,7 +263,24 @@ async def probe_lm_studio(api_base: str | None = None) -> dict[str, Any]:
             response.raise_for_status()
             payload = response.json()
     except Exception as exc:
-        return {"reachable": False, "api_base": base, "error": str(exc), "models": []}
+        hint = ""
+        if running_in_container() and "host.docker.internal" not in base:
+            hint = (
+                " The backend is running in a container, so this address does "
+                "not point at the host. Unset LM_STUDIO_API_BASE in .env and "
+                "let the default apply."
+            )
+        elif "host.docker.internal" in base:
+            hint = (
+                " Check that LM Studio's server is started and that its OpenAI-"
+                "compatible endpoint is on this port (Developer -> Start Server)."
+            )
+        return {
+            "reachable": False,
+            "api_base": base,
+            "error": f"{type(exc).__name__}: {exc}.{hint}",
+            "models": [],
+        }
 
     models = [
         {

@@ -1,5 +1,8 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
+
+import { environment } from '@env/environment';
 
 import { ApiService, RunExecutionPayload } from '../api/api.service';
 import {
@@ -99,6 +102,7 @@ export class LabStore {
   readonly channelLabels = CHANNEL_LABELS;
 
   // ── Run state ─────────────────────────────────────────────────────────────
+  readonly apiReachable = signal(true);
   readonly running = signal(false);
   readonly lastResult = signal<Execution | null>(null);
   readonly history = signal<Execution[]>([]);
@@ -191,6 +195,18 @@ export class LabStore {
    * own section, and the message names the endpoint that broke.
    */
   async bootstrap(): Promise<void> {
+    // One reachability check up front. Without it, a stopped backend produces
+    // nine identical failures and buries the single fact that matters.
+    this.apiReachable.set(await this.api.ping());
+    if (!this.apiReachable()) {
+      this.error.set(
+        `Cannot reach the backend at ${environment.apiBase}. ` +
+        'Check that the API container is running (docker compose ps) and that ' +
+        'nothing else holds port 8000.',
+      );
+      return;
+    }
+
     const results = await Promise.allSettled([
       firstValueFrom(this.api.getHandSpec()),
       firstValueFrom(this.api.emgFormat()),
@@ -595,12 +611,36 @@ export class LabStore {
     this.bridge.emitLocal({ ...execution.movement, execution_id: execution.id } as MovementFrame);
   }
 
+  /**
+   * Turn an HTTP failure into something a human can act on.
+   *
+   * `HttpErrorResponse` does not extend `Error`, so the previous
+   * `instanceof Error` branch never matched and every failure fell through to
+   * `String(err)` — which is how nine endpoints all reported "[object Object]"
+   * and told nobody anything.
+   */
   private describe(err: unknown): string {
-    if (typeof err === 'object' && err && 'error' in err) {
-      const detail = (err as { error?: { detail?: string } }).error?.detail;
-      if (detail) return detail;
+    if (err instanceof HttpErrorResponse) {
+      // Status 0 means the request never reached a server: the backend is
+      // down, the port is wrong, or CORS rejected it before any response.
+      if (err.status === 0) {
+        return `cannot reach ${environment.apiBase} (backend down, or CORS)`;
+      }
+      const body = err.error as { detail?: unknown } | string | null;
+      if (typeof body === 'string' && body.trim()) return `${err.status} ${body}`;
+      const detail = typeof body === 'object' && body ? body.detail : undefined;
+      if (typeof detail === 'string') return `${err.status} ${detail}`;
+      if (Array.isArray(detail)) {
+        return `${err.status} ${detail.map((d) => JSON.stringify(d)).join('; ')}`;
+      }
+      return `${err.status} ${err.statusText || 'request failed'}`;
     }
     if (err instanceof Error) return err.message;
-    return String(err);
+    if (typeof err === 'string') return err;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
   }
 }

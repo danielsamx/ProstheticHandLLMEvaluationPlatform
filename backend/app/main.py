@@ -35,6 +35,8 @@ async def lifespan(app: FastAPI):
             "kinematic_dof": KINEMATIC_DOF,
             "default_limit_profile": settings.default_limit_profile.value,
             "lm_studio_api_base": settings.lm_studio_api_base,
+            "cors_origins": settings.cors_origins,
+            "cors_origin_regex": settings.cors_origin_regex,
         },
     )
     yield
@@ -58,6 +60,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
