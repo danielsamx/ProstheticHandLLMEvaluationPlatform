@@ -22,11 +22,17 @@ import pytest
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _load_resolver():
-    """Extract the resolver without importing litellm."""
+def _load_resolver(extra: set[str] | None = None):
+    """Extract pure helpers from the module without importing litellm.
+
+    litellm is a heavy optional dependency and these functions do not touch it.
+    Loading them by AST keeps the logic they encode — which is where the real
+    bugs have been — testable in any environment.
+    """
     source = (BACKEND / "app" / "services" / "llm_service.py").read_text()
     tree = ast.parse(source)
     wanted = {"resolve_response_format", "_NO_JSON_OBJECT_PREFIXES", "_is_format_rejection"}
+    wanted |= extra or set()
     body = [
         node for node in tree.body
         if (isinstance(node, (ast.FunctionDef,)) and node.name in wanted)
@@ -174,3 +180,35 @@ def test_the_timeout_suits_local_inference():
     from app.core.config import Settings
 
     assert Settings(_env_file=None).llm_request_timeout_s >= 300
+
+
+# ── Failure attribution ─────────────────────────────────────────────────────
+
+
+def test_a_dropped_connection_is_recognised_as_transport_not_provider():
+    """LM Studio logs "Client disconnected" whether we hit our own deadline or
+    the connection died for another reason, so its log cannot tell them apart.
+
+    Elapsed time can. A connection that died at 15s inside a 1800s deadline is
+    not a slow model, and saying so matters: the natural reaction to "client
+    disconnected" is to raise the timeout, which fixes nothing when the cause
+    was the backend restarting mid-request.
+    """
+    resolver = _load_resolver(extra={"_is_connection_drop"})
+    drop = resolver._is_connection_drop
+
+    class APIConnectionError(Exception):
+        pass
+
+    assert drop(APIConnectionError("server disconnected"))
+    assert drop(ConnectionResetError("reset by peer"))
+    assert not drop(ValueError("'response_format.type' must be 'json_schema'"))
+
+
+def test_the_wrapper_records_how_long_it_waited():
+    """Whatever the cause, the first question is "how long did it wait?" — and
+    the answer has to be in the stored error, not only in a log line."""
+    source = (BACKEND / "app" / "services" / "llm_service.py").read_text()
+    assert "elapsed_s=time.perf_counter() - started" in source
+    assert 'waited = "" if elapsed_s is None else f" after {elapsed_s:.1f}s"' in source
+    assert 'error_type="ConnectionLost"' in source

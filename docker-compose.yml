@@ -34,6 +34,10 @@ services:
       # the host gateway.
       LM_STUDIO_API_BASE: ${LM_STUDIO_API_BASE:-http://host.docker.internal:1234/v1}
       OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+      # A ceiling, not an expectation. Local CPU inference spends most of its
+      # time on prompt processing, and how long that takes is a property of the
+      # machine, not something this project can predict.
+      LLM_REQUEST_TIMEOUT_S: ${LLM_REQUEST_TIMEOUT_S:-1800}
     env_file:
       - .env
     # Docker Desktop provides host.docker.internal automatically; this mapping
@@ -47,7 +51,15 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              python -m app.seeds.seed &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000
+             --reload --reload-exclude '*.log' --timeout-graceful-shutdown 1800"
+    # --reload is what makes editing the backend pleasant, and it is also the
+    # most likely cause of an inference that dies partway through: any write to
+    # a mounted .py file restarts the worker and kills whatever request was in
+    # flight. The graceful-shutdown window lets a running execution finish
+    # instead of being cut off mid-generation.
+    #
+    # If a run must not be interrupted, drop --reload for that session.
 
   frontend:
     build:

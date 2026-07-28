@@ -50,9 +50,18 @@ class Settings(BaseSettings):
 
     # ── LLM / LiteLLM ────────────────────────────────────────────────────────
     #: Local CPU inference is slow in a way hosted APIs are not: a 3B model can
-    #: spend a minute on prompt processing alone before emitting a token. 120 s
+    #: spend minutes on prompt processing alone before emitting a token. 120 s
     #: was a hosted-API figure applied to a workstation.
-    llm_request_timeout_s: float = 600.0
+    #:
+    #: 1800 s is not an expectation that a run takes half an hour — it is a
+    #: deliberately useless ceiling. The timeout's only remaining job is to stop
+    #: a truly wedged request from holding a connection forever; it is no longer
+    #: a judgement about how long inference "should" take, because on a cold
+    #: model on CPU that figure is unknowable in advance and guessing it wrong
+    #: destroys the run at the last moment.
+    #:
+    #: Override with LLM_REQUEST_TIMEOUT_S in the environment.
+    llm_request_timeout_s: float = 1800.0
     #: Zero on purpose.
     #:
     #: LiteLLM's retry restarts the request from scratch, including prompt

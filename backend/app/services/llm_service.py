@@ -217,9 +217,13 @@ async def call_llm(
                 effective_format = "text"
                 format_downgraded = True
             except Exception as retry_exc:
-                raise _wrap(retry_exc, model, is_local, sampling) from retry_exc
+                raise _wrap(retry_exc, model, is_local, sampling,
+                            elapsed_s=time.perf_counter() - started,
+                            timeout_s=kwargs["timeout"]) from retry_exc
         else:
-            raise _wrap(exc, model, is_local, sampling) from exc
+            raise _wrap(exc, model, is_local, sampling,
+                        elapsed_s=time.perf_counter() - started,
+                        timeout_s=kwargs["timeout"]) from exc
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -298,36 +302,87 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
 
 
 def _wrap(
-    exc: Exception, model: str, is_local: bool, sampling: dict[str, Any]
+    exc: Exception,
+    model: str,
+    is_local: bool,
+    sampling: dict[str, Any],
+    elapsed_s: float | None = None,
+    timeout_s: float | None = None,
 ) -> LlmCallError:
     """Normalise any provider failure into the platform's own error type.
 
     Everything that leaves this module must be an :class:`LlmCallError`, because
     that is what the orchestrator catches to record a `provider_error` execution.
     An escaping raw exception becomes an unhandled 500 and loses the run.
+
+    ``elapsed_s`` is what distinguishes the two failures that look identical in
+    the runtime's log. LM Studio prints "Client disconnected" whether we hit our
+    own deadline or the connection died for some other reason, and without the
+    elapsed time there is no way to tell which — so the obvious response is to
+    raise the timeout, which fixes nothing if the cause was a dropped
+    connection. Recording it turns a guess into a reading.
     """
+    waited = "" if elapsed_s is None else f" after {elapsed_s:.1f}s"
+
     if isinstance(exc, asyncio.TimeoutError) or "timeout" in type(exc).__name__.lower():
         return LlmCallError(
-            f"{type(exc).__name__}: {exc}",
+            f"{type(exc).__name__}{waited}: {exc}",
             error_type="Timeout",
             retryable=True,
             hint=(
-                "The runtime did not answer in time. On a local model this is "
-                "usually prompt processing rather than a fault: a small model on "
-                "CPU can spend a minute or more before emitting its first token. "
-                "Check LM Studio's log for 'Prompt processing progress' — if it "
-                "is advancing, the model is working and the timeout is simply "
-                "too short. Enabling GPU offload is the largest single "
-                "improvement; shortening the EMG window is the next."
+                f"The runtime did not answer within {timeout_s or settings.llm_request_timeout_s:.0f}s"
+                f"{waited}. On a local model this is usually prompt processing "
+                "rather than a fault: a small model on CPU can spend minutes "
+                "before emitting its first token. Check LM Studio's log for "
+                "'Prompt processing progress' — if it is advancing, the model is "
+                "working and the deadline is simply too short. Enabling GPU "
+                "offload is the largest single improvement; shortening the EMG "
+                "window is the next."
             ),
         )
+
+    # A connection that dropped well inside the deadline is not a slow model.
+    # Raising the timeout would be the natural reaction and the wrong one, so
+    # the error says so explicitly.
+    if (
+        elapsed_s is not None
+        and timeout_s
+        and elapsed_s < timeout_s * 0.5
+        and _is_connection_drop(exc)
+    ):
+        return LlmCallError(
+            f"{type(exc).__name__}{waited}: {exc}",
+            error_type="ConnectionLost",
+            retryable=True,
+            hint=(
+                f"The connection to the runtime dropped{waited}, well inside the "
+                f"{timeout_s:.0f}s deadline — so this is not a slow model and "
+                "raising the timeout will not help. The usual causes are the "
+                "backend restarting mid-request (uvicorn --reload picks up any "
+                "edit to a mounted file and kills in-flight work), LM Studio "
+                "unloading or swapping the model, or the machine sleeping."
+            ),
+        )
+
     return LlmCallError(
-        f"{type(exc).__name__}: {exc}",
+        f"{type(exc).__name__}{waited}: {exc}",
         error_type=type(exc).__name__,
         status_code=getattr(exc, "status_code", None),
         provider_code=str(getattr(exc, "code", "") or "") or None,
         retryable=_is_retryable(exc),
         hint=diagnose(exc, model=model, is_local=is_local, sampling=sampling),
+    )
+
+
+def _is_connection_drop(exc: Exception) -> bool:
+    """Did the transport fail, as opposed to the provider rejecting the call?"""
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    return any(
+        token in name or token in text
+        for token in ("apiconnection", "connectionerror", "connectionreset",
+                      "remoteprotocol", "incompleteread", "disconnect",
+                      "connection closed", "server disconnected")
     )
 
 
