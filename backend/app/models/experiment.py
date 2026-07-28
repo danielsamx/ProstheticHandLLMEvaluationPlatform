@@ -42,6 +42,9 @@ class Experiment(UUIDMixin, TimestampMixin, Base):
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
 
     # ── Frozen experimental conditions ──────────────────────────────────────
     system_prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -63,6 +66,7 @@ class Experiment(UUIDMixin, TimestampMixin, Base):
     tags: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     owner = relationship("User", back_populates="experiments", lazy="joined")
+    project = relationship("Project", back_populates="experiments", lazy="joined")
     executions = relationship(
         "Execution", back_populates="experiment", cascade="all, delete-orphan"
     )
@@ -86,9 +90,14 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     experiment_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("experiments.id", ondelete="CASCADE"), index=True
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
     triggered_by_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+    #: Identity snapshot: who ran this, preserved independently of the account.
+    triggered_by_email: Mapped[str | None] = mapped_column(String(320), index=True)
     repetition_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # ── What was run ────────────────────────────────────────────────────────
@@ -112,9 +121,34 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     )
 
     #: Immutable copy of provider/model/decoding parameters at run time.
+    #: The explicit columns below duplicate part of it deliberately: the JSON
+    #: preserves fidelity, the columns make `GROUP BY temperature` a plain query
+    #: instead of a JSON traversal across millions of rows.
     model_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     litellm_model: Mapped[str | None] = mapped_column(String(320), index=True)
     provider_slug: Mapped[str | None] = mapped_column(String(64), index=True)
+    model_key: Mapped[str | None] = mapped_column(String(256), index=True)
+    #: Where the request actually went. Two runs of "the same model" against
+    #: different endpoints are not the same condition.
+    api_base: Mapped[str | None] = mapped_column(String(512))
+    api_flavour: Mapped[str | None] = mapped_column(String(32))
+
+    # ── Decoding parameters as sent ─────────────────────────────────────────
+    temperature: Mapped[float | None] = mapped_column(Float, index=True)
+    top_p: Mapped[float | None] = mapped_column(Float)
+    top_k: Mapped[int | None] = mapped_column(Integer)
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    seed: Mapped[int | None] = mapped_column(Integer)
+    frequency_penalty: Mapped[float | None] = mapped_column(Float)
+    presence_penalty: Mapped[float | None] = mapped_column(Float)
+    stop_sequences: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    response_format: Mapped[str | None] = mapped_column(String(32))
+    #: Provider-specific reasoning controls (effort, thinking budget…).
+    reasoning_mode: Mapped[str | None] = mapped_column(String(32))
+    custom_parameters: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    #: Knobs the runtime silently ignored. Without this a run looks reproducible
+    #: when it is not.
+    dropped_parameters: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     handedness: Mapped[str] = mapped_column(String(8), default="right", nullable=False)
     limit_profile: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -158,6 +192,20 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     retry_of_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("executions.id", ondelete="SET NULL")
     )
+    warning_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # ── Origin of the request ───────────────────────────────────────────────
+    #: Recorded so a result can be traced to the machine and session that
+    #: produced it. `client_ip` is nullable and may be disabled by policy.
+    client_ip: Mapped[str | None] = mapped_column(String(45))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    browser: Mapped[str | None] = mapped_column(String(64))
+    operating_system: Mapped[str | None] = mapped_column(String(64))
+    device_type: Mapped[str | None] = mapped_column(String(24))
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    #: Correlates this execution with its audit entries and log lines.
+    request_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    app_version: Mapped[str | None] = mapped_column(String(32))
 
     experiment = relationship("Experiment", back_populates="executions")
     emg_window = relationship("EmgWindowRecord", back_populates="executions", lazy="joined")
@@ -179,3 +227,8 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     errors = relationship(
         "ExecutionError", back_populates="execution", cascade="all, delete-orphan"
     )
+    logs = relationship(
+        "ExecutionLog", back_populates="execution",
+        cascade="all, delete-orphan", order_by="ExecutionLog.sequence",
+    )
+    project = relationship("Project", lazy="joined")

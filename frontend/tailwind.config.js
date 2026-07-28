@@ -30,6 +30,10 @@ module.exports = {
         sans: ['Inter', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
+      height: {
+        // TopBar desktop step: tall enough to show the 96px logo plate at 1:1.
+        22: '5.5rem',
+      },
       boxShadow: {
         panel: '0 1px 2px rgba(0, 31, 63, 0.06), 0 4px 12px rgba(0, 31, 63, 0.05)',
       },

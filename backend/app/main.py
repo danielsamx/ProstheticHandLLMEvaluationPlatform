@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
+from app.core.middleware import RequestContextMiddleware
 from app.db.session import engine
 from app.domain.hand_spec import DRIVEN_DOF, KINEMATIC_DOF
 from app.ws import emg_stream
@@ -56,6 +57,10 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Order matters: the context must be bound before any handler runs, and CORS
+# must be outermost so preflight responses still carry the right headers.
+app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

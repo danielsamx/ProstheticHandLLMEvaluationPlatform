@@ -20,6 +20,9 @@ class Settings(BaseSettings):
 
     # ── App ──────────────────────────────────────────────────────────────────
     app_name: str = "Prosthetic Hand LLM Evaluation Platform"
+    #: Stamped on every execution so a result can be tied to the code that
+    #: produced it, independently of the prompt hashes.
+    app_version: str = "1.1.0"
     app_env: Literal["development", "staging", "production"] = "development"
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"

@@ -1,5 +1,7 @@
 # HANDi EPN V3 — hardware specification
 
+**Languages:** [English](hardware.md) · [Español](../es/hardware.md)
+
 Consolidated during development from four technical manuals. **This document is
 reference material for humans. The runtime never reads it — the authoritative
 copy lives in `backend/app/domain/hand_spec.py`.**

@@ -25,10 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.request_context import current_context
 from app.domain.hand_spec import Handedness, get_limit_profile
 from app.models.emg import EmgWindowRecord
 from app.models.enums import ErrorCategory, ExecutionStatus
-from app.models.experiment import Execution
+from app.models.experiment import Execution, Experiment
 from app.models.llm import LlmModel, SamplingConfiguration
 from app.models.metrics import ExecutionMetric, SimulatorMovement
 from app.models.prompts import (
@@ -36,11 +37,13 @@ from app.models.prompts import (
     SystemPromptVersion,
     TechnicalContextVersion,
 )
+from app.models.audit import AuditAction, AuditOutcome
+from app.models.execution_log import ExecutionLog, LogLevel
 from app.models.validation import ExecutionError, ValidationIssueRecord, ValidationResult
 from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
 from app.schemas.llm_output import llm_json_schema
-from app.services import emg_service
+from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services.metrics_service import compute_metrics
 from app.validation.pipeline import validate_response
@@ -77,8 +80,32 @@ async def run_execution(
     repetition_group: str | None = None,
     emg_session_id: str | None = None,
     emg_sequence: int | None = None,
+    project_id: uuid.UUID | None = None,
 ) -> Execution:
     """Run one execution and persist the complete scientific record."""
+    origin = current_context()
+    log_sequence = 0
+
+    def log(level: LogLevel, stage: str, message: str, **context: Any) -> None:
+        """Append a line to the execution's own log.
+
+        These are not application logs. They are the lines that explain a
+        result — a retry, a dropped sampling parameter, a response that needed
+        repair before it would parse — and they belong to the record, not to a
+        rotating file.
+        """
+        nonlocal log_sequence
+        session.add(
+            ExecutionLog(
+                execution_id=execution.id,
+                sequence=log_sequence,
+                level=level.value,
+                stage=stage,
+                message=message,
+                context=context,
+            )
+        )
+        log_sequence += 1
 
     # ── 1. Resolve configuration ────────────────────────────────────────────
     config = await session.get(SamplingConfiguration, sampling_configuration_id)
@@ -131,9 +158,16 @@ async def run_execution(
         merge_context_into_system=merge_context_into_system,
     )
 
+    resolved_project_id = project_id
+    if resolved_project_id is None and experiment_id is not None:
+        experiment = await session.get(Experiment, experiment_id)
+        resolved_project_id = experiment.project_id if experiment else None
+
     execution = Execution(
         experiment_id=experiment_id,
+        project_id=resolved_project_id,
         triggered_by_id=triggered_by_id,
+        triggered_by_email=origin.actor_email,
         repetition_index=repetition_index,
         llm_model_id=model.id,
         sampling_configuration_id=config.id,
@@ -144,6 +178,24 @@ async def run_execution(
         model_snapshot=_model_snapshot(model, provider, config),
         litellm_model=f"{provider.litellm_prefix}/{model.model_key}",
         provider_slug=provider.slug,
+        model_key=model.model_key,
+        api_base=provider.api_base,
+        api_flavour="openai-compatible" if provider.is_local else provider.litellm_prefix,
+        # Duplicated from the snapshot on purpose: as columns these are directly
+        # groupable in SQL, which is what a parameter sweep analysis needs.
+        temperature=config.temperature,
+        top_p=config.top_p,
+        top_k=config.top_k,
+        max_tokens=config.max_tokens,
+        seed=config.seed,
+        frequency_penalty=config.frequency_penalty,
+        presence_penalty=config.presence_penalty,
+        stop_sequences=list(config.stop_sequences or []),
+        response_format=config.response_format,
+        reasoning_mode=(config.extra_params or {}).get("reasoning_effort"),
+        custom_parameters=dict(config.extra_params or {}),
+        app_version=settings.app_version,
+        **origin.as_origin(),
         handedness=handedness.value,
         limit_profile=profile.id.value,
         experiment_type=experiment_type,
@@ -161,6 +213,12 @@ async def run_execution(
     )
     session.add(execution)
     await session.flush()
+
+    log(LogLevel.INFO, "prompt",
+        "Assembled the three-block prompt.",
+        chars=assembled.char_counts(),
+        frozen_context_sha256=assembled.frozen_context_sha256,
+        limit_profile=profile.id.value)
 
     # ── 4. Invoke the model ─────────────────────────────────────────────────
     call: LlmCallResult | None = None
@@ -195,6 +253,19 @@ async def run_execution(
                 context={"model": execution.litellm_model, "provider": provider.slug},
             )
         )
+        log(LogLevel.ERROR, "provider", str(exc),
+            error_type=exc.error_type, retryable=exc.retryable,
+            status_code=exc.status_code)
+        await audit_service.record(
+            session, AuditAction.EXECUTION_FAILED,
+            summary=f"Provider error from {execution.litellm_model}: {exc.error_type}",
+            outcome=AuditOutcome.FAILURE,
+            entity_type="execution", entity_id=execution.id,
+            entity_label=execution.litellm_model,
+            project_id=execution.project_id,
+            error_message=str(exc),
+            context={"stage": "provider", "retryable": exc.retryable},
+        )
         await session.flush()
         logger.error(
             "execution_provider_error",
@@ -228,6 +299,21 @@ async def run_execution(
     execution.total_tokens = call.total_tokens
     execution.cost_usd = call.cost_usd
     execution.tokens_per_second = call.tokens_per_second
+    execution.dropped_parameters = list(call.dropped_params)
+
+    log(LogLevel.INFO, "provider",
+        f"Model responded in {call.latency_ms} ms.",
+        finish_reason=call.finish_reason,
+        prompt_tokens=call.prompt_tokens,
+        completion_tokens=call.completion_tokens,
+        cost_usd=call.cost_usd)
+
+    if call.dropped_params:
+        # A silently ignored knob makes a run look reproducible when it is not,
+        # so this is a warning on the record rather than a debug line.
+        log(LogLevel.WARNING, "provider",
+            "The runtime ignored sampling parameters that were requested.",
+            dropped=call.dropped_params)
 
     # ── 5. Validate before anything touches the simulator ───────────────────
     report: ValidationReport = validate_response(
@@ -240,6 +326,17 @@ async def run_execution(
     )
     if report.parsed_command is not None:
         execution.parsed_response = report.parsed_command.model_dump(mode="json")
+
+    execution.warning_count = len(report.warnings)
+
+    for issue in report.issues:
+        log(
+            LogLevel.ERROR if issue.severity.value == "error" else LogLevel.WARNING,
+            f"validation.{issue.stage.value}",
+            issue.message,
+            code=issue.code,
+            field_path=issue.field_path,
+        )
 
     result_row = ValidationResult(
         execution_id=execution.id,
@@ -323,6 +420,29 @@ async def run_execution(
         execution.simulator_executed = True
 
     config.use_count += 1
+
+    await audit_service.record(
+        session,
+        AuditAction.EXECUTION_COMPLETED if report.passed else AuditAction.EXECUTION_FAILED,
+        summary=(
+            f"{execution.litellm_model} -> {execution.status}"
+            + (f" (rejected at {result_row.failed_stage})" if not report.passed else "")
+        ),
+        outcome=AuditOutcome.SUCCESS if report.passed else AuditOutcome.FAILURE,
+        entity_type="execution",
+        entity_id=execution.id,
+        entity_label=execution.litellm_model,
+        project_id=execution.project_id,
+        context={
+            "experiment_id": str(experiment_id) if experiment_id else None,
+            "latency_ms": execution.latency_ms,
+            "total_tokens": execution.total_tokens,
+            "cost_usd": float(execution.cost_usd or 0),
+            "failed_stage": result_row.failed_stage,
+            "frozen_context_sha256": execution.frozen_context_sha256,
+        },
+    )
+
     await session.flush()
 
     logger.info(
