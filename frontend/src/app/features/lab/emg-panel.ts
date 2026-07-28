@@ -40,50 +40,59 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
   template: `
     <div class="space-y-3">
       <!--
-        Mode toggle and shape read-out share one row. The toggle had a strip to
-        itself while this line had spare width, so the panel was spending a whole
-        row on a single control.
+        Mode toggle and shape read-out share one row, split into two groups that
+        are pushed to opposite ends. The distinction is what the user can act on:
+        everything on the left changes the acquisition, everything on the right
+        only reports what the current window contains. Interleaving them meant a
+        reader had to check each item to know whether it was a control.
+
+        The groups wrap independently, so on a narrow panel the read-out drops to
+        its own line intact instead of splitting mid-way through the numbers.
       -->
-      <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px]">
-        <mat-slide-toggle class="shrink-0"
-                          [ngModel]="store.liveMode()"
-                          (ngModelChange)="toggleLive($event)">
-          <span class="text-[11px] font-medium text-navy">
-            {{ store.liveMode() ? 'Live' : 'Manual' }}
-          </span>
-        </mat-slide-toggle>
-
-        @if (store.liveMode()) {
-          <span class="lab-chip"
-                [class]="stream.state() === 'open' ? 'bg-navy text-white' : 'bg-amber text-navy'">
-            {{ stream.state() }}
-          </span>
-          <span class="lab-mono text-[10px] text-ink-500">
-            {{ stream.framesReceived() }}f · {{ stream.executionsTriggered() }}r
-          </span>
-          <mat-slide-toggle [(ngModel)]="autoRun" (ngModelChange)="reconnect()">
-            <span class="text-[10px] text-ink-600">Auto-run</span>
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 text-[11px]">
+        <!-- ── Controls ──────────────────────────────────────────────────── -->
+        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <mat-slide-toggle class="dense-toggle shrink-0"
+                            [ngModel]="store.liveMode()"
+                            (ngModelChange)="toggleLive($event)">
+            <span class="text-[11px] font-medium text-navy">
+              {{ store.liveMode() ? 'Live' : 'Manual' }}
+            </span>
           </mat-slide-toggle>
-        }
 
-        <span class="h-4 w-px shrink-0 bg-ink-200"></span>
+          @if (store.liveMode()) {
+            <span class="lab-chip"
+                  [class]="stream.state() === 'open' ? 'bg-navy text-white' : 'bg-amber text-navy'">
+              {{ stream.state() }}
+            </span>
+            <span class="lab-mono text-[10px] text-ink-500">
+              {{ stream.framesReceived() }}f · {{ stream.executionsTriggered() }}r
+            </span>
+            <mat-slide-toggle class="dense-toggle shrink-0"
+                              [(ngModel)]="autoRun" (ngModelChange)="reconnect()">
+              <span class="text-[10px] text-ink-600">Auto-run</span>
+            </mat-slide-toggle>
+          }
+        </div>
 
-        <span class="lab-chip bg-navy text-white lab-mono">{{ store.sampleCount() }} × 8</span>
-        <span class="text-ink-500">
-          {{ store.windowMs().toFixed(0) }} ms @ {{ store.sampleRateHz() }} Hz
-        </span>
-        <span class="hidden text-ink-500 xl:inline"
-              matTooltip="Rows are time steps in ascending order; columns are CH1 to CH8. Values are raw converter output.">
-          rows = time · cols = CH1…CH8 · raw
-        </span>
-
-
-        @if (store.groundTruth(); as truth) {
-          <span class="lab-chip bg-amber text-navy"
-                matTooltip="Known correct answer — accuracy is scored automatically.">
-            {{ truth }}
+        <!-- ── Read-out ──────────────────────────────────────────────────── -->
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span class="lab-chip bg-navy text-white lab-mono">{{ store.sampleCount() }} × 8</span>
+          <span class="text-ink-500">
+            {{ store.windowMs().toFixed(0) }} ms @ {{ store.sampleRateHz() }} Hz
           </span>
-        }
+          <span class="hidden text-ink-500 xl:inline"
+                matTooltip="Rows are time steps in ascending order; columns are CH1 to CH8. Values are raw converter output.">
+            rows = time · cols = CH1…CH8 · raw
+          </span>
+
+          @if (store.groundTruth(); as truth) {
+            <span class="lab-chip bg-amber text-navy"
+                  matTooltip="Known correct answer — accuracy is scored automatically.">
+              {{ truth }}
+            </span>
+          }
+        </div>
       </div>
 
       <!-- ── Traces ────────────────────────────────────────────────────── -->

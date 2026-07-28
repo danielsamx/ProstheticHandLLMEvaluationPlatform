@@ -1,3 +1,4 @@
+import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -5,18 +6,24 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { LabStore } from '@core/services/lab.store';
 
 //
-// Five stages. `schema` and `consistency` existed only to check a JSON object
-// against itself and against the command line beside it; with the command as
-// the whole response there is nothing left to disagree.
+// Seven gates, in the order the backend runs them. `schema` checks the object
+// has the declared shape; `consistency` checks the serial_command agrees with
+// the intent, gesture and commands stated beside it. Both exist only because
+// the response states its decision twice — which is the point: a model that
+// contradicts itself is invisible under a single-representation contract.
 //
-const STAGES = ['parse', 'protocol', 'range', 'kinematic', 'safety'];
+// The order matters on screen as much as in the pipeline: the first red gate
+// is where the model actually broke down, and the ones after it were never
+// reached rather than passed.
+//
+const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinematic', 'safety'];
 
 /** Outcome of the most recent execution: metrics, validation trace, raw JSON. */
 @Component({
   selector: 'ph-result-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatIconModule, MatTooltipModule],
+  imports: [DecimalPipe, MatIconModule, MatTooltipModule],
   template: `
     @if (store.lastResult(); as execution) {
       <div class="space-y-3">
@@ -168,11 +175,24 @@ const STAGES = ['parse', 'protocol', 'range', 'kinematic', 'safety'];
               <div class="lab-mono text-xs">{{ metrics.detected_pattern ?? '—' }}</div>
             </div>
             <div class="rounded border border-ink-200 bg-ink-50 p-2"
-                 matTooltip="The reply was the bare command line, with nothing wrapped around it. The sharpest single measure of instruction adherence.">
+                 matTooltip="The reply was bare JSON, with no fence or prose around it. The sharpest single measure of instruction adherence.">
               <div class="lab-label">Clean reply</div>
               <div class="lab-mono text-xs">
                 @if (metrics.is_bare_json) { <span class="text-navy">yes</span> }
                 @else { <span class="text-amber">needed repair</span> }
+              </div>
+            </div>
+            <div class="rounded border border-ink-200 bg-ink-50 p-2"
+                 matTooltip="What the model said about itself. Never trusted — the calibration figure beside it is how far that claim was from the truth.">
+              <div class="lab-label">Confidence</div>
+              <div class="lab-mono text-xs">
+                @if (metrics.model_confidence === null) { <span class="text-ink-500">—</span> }
+                @else {
+                  <span class="text-navy">{{ metrics.model_confidence | number: '1.2-2' }}</span>
+                  @if (metrics.calibration_error !== null) {
+                    <span class="text-ink-500"> · err {{ metrics.calibration_error | number: '1.2-2' }}</span>
+                  }
+                }
               </div>
             </div>
             <div class="rounded border border-ink-200 bg-ink-50 p-2"

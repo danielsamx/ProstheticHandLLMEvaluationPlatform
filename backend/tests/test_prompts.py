@@ -47,43 +47,54 @@ def test_identical_inputs_produce_identical_hashes():
     )
 
 
-def test_dynamic_block_carries_the_matrix_and_the_feature_table():
+def test_the_dynamic_block_is_the_matrix_and_nothing_else():
+    """Every line is a matrix row. No headings, no metadata, no feature table.
+
+    The features are still computed and still stored on the window; they are
+    simply no longer handed to the model. A feature table is a preprocessing
+    step, and the question this platform asks is what an LLM does with raw EMG.
+    """
     window = synthesise_window("rest", seed=3, samples=64)
     block = build_prompt(window).dynamic_prompt
 
-    # Layout is stated explicitly so the model cannot assume a transpose.
-    assert "rows x 8 columns" in block
-    assert "Column order = CH1, CH2, CH3, CH4, CH5, CH6, CH7, CH8" in block
+    lines = block.splitlines()
+    assert lines, "the block must not be empty"
+    assert all(ln.startswith("[") and ln.endswith("]") for ln in lines)
+    assert all(ln.count(",") == 7 for ln in lines)
+    assert len(lines) <= min(window.sample_count, DEFAULT_MATRIX_MAX_ROWS)
 
-    # Rows are present and well formed, capped by the print budget.
-    matrix_rows = [ln for ln in block.splitlines() if ln.startswith("[") and ln.endswith("]")]
-    assert matrix_rows
-    assert len(matrix_rows) <= min(window.sample_count, DEFAULT_MATRIX_MAX_ROWS)
-    assert all(row.count(",") == 7 for row in matrix_rows)
-
-    # ...and the derived summary for all eight electrodes.
-    for index in range(1, 9):
-        assert f"| CH{index} |" in block
+    # The derived summary is gone from the prompt.
+    for token in ("RMS", "flexor_ratio", "CH1", "Hand:", "Acquisition"):
+        assert token not in block
 
 
-def test_long_windows_are_decimated_and_the_excerpt_is_labelled():
-    """The feature table must still describe the full window, not the excerpt."""
+def test_long_windows_are_decimated_without_announcing_it_in_the_prompt():
+    """There is nowhere to put a note under a matrix-only contract, so the
+    decimation factor is returned to the caller and recorded on the execution
+    instead — where it stays queryable rather than buried in prompt text."""
+    from app.prompts.dynamic_prompt import render_matrix_block
+
     window = synthesise_window("power_grasp", seed=3, samples=1000)
     block = build_prompt(window).dynamic_prompt
+    lines = block.splitlines()
 
-    matrix_rows = [ln for ln in block.splitlines() if ln.startswith("[") and ln.endswith("]")]
-    assert len(matrix_rows) < window.sample_count
-    assert len(matrix_rows) <= 64, "the printed excerpt must stay inside the row budget"
-    assert "row is shown" in block
-    assert "computed from" in block
+    assert len(lines) < window.sample_count
+    assert len(lines) <= DEFAULT_MATRIX_MAX_ROWS
+
+    _, rendered, factor = render_matrix_block(window)
+    assert rendered == len(lines)
+    assert factor > 1
 
 
-def test_hand_selection_reaches_the_dynamic_block_only():
+def test_the_hand_no_longer_appears_anywhere_in_the_prompt():
+    """A consequence worth pinning: the response schema still asks for `hand`,
+    so the model must now guess it. The pipeline records a mismatch against the
+    configured hand as a warning rather than a failure."""
     right = build_prompt(synthesise_window("rest", seed=3), handedness=Handedness.RIGHT)
     left = build_prompt(synthesise_window("rest", seed=3), handedness=Handedness.LEFT)
-    assert "Hand: Right" in right.dynamic_prompt
-    assert "Hand: Left" in left.dynamic_prompt
-    assert right.frozen_context_sha256 == left.frozen_context_sha256
+
+    assert right.dynamic_prompt == left.dynamic_prompt
+    assert right.full_prompt_sha256 == left.full_prompt_sha256
 
 
 def test_message_roles_keep_the_frozen_material_in_the_system_turn():
@@ -99,38 +110,47 @@ def test_context_can_move_to_the_user_turn_for_awkward_runtimes():
     assert prompt.technical_context in prompt.messages[1]["content"]
 
 
-def test_system_prompt_demands_only_the_command():
+def test_system_prompt_demands_json_and_internal_agreement():
     lowered = SYSTEM_PROMPT.lower()
-    assert "one line containing only the serial command" in lowered
-    assert "no json" in lowered
-    assert "no explanation" in lowered
+    assert "valid json only" in lowered
+    assert "no prose, markdown or code fences" in lowered
+    # The clause the `consistency` stage exists to enforce.
+    assert "serial_command must match intent/gesture/commands" in lowered
 
 
 def test_technical_context_is_generated_not_copied():
-    """It must contain the live limits, so it can never drift from the validators."""
+    """Every figure must come from the domain, so the text the model reads can
+    never promise a range the validators then reject."""
     context = build_technical_context(get_limit_profile(LimitProfileId.TABLE_5_V3))
-    assert "| A   | D5" in context
-    assert "600" in context and "130" in context
-    assert "WHAT TO SEND BACK" in context
+    assert "A(pinky 0-600)" in context
+    assert "E(thumb_lower 0-130)" in context
     for letter in "OCPRWYLMHUGSXI":
-        assert f"| {letter}   |" in context
+        assert f"{letter}=" in context
 
 
-def test_the_output_contract_is_one_line_not_a_document():
-    """The response is the command itself, so the contract is four examples
-    rather than a schema. Everything the old JSON carried besides the command
-    was the model's account of its own reasoning, which the backend never
-    trusted and now does not ask for."""
+def test_the_limit_profile_reaches_the_commands_line():
+    """The two profiles disagree because the manual disagrees with itself. The
+    prompt has to state whichever one the execution is actually validated
+    against, or a correct answer under one would be scored against the other."""
+    table5 = build_technical_context(get_limit_profile(LimitProfileId.TABLE_5_V3))
+    annexa = build_technical_context(get_limit_profile(LimitProfileId.ANNEX_A_V3))
+    assert "F(thumb_upper 0-400)" in table5
+    assert "F(thumb_upper 0-100)" in annexa
+
+
+def test_the_output_contract_states_every_field_the_schema_accepts():
+    """The model is told the exact shape it will be validated against. A field
+    checked but never stated would be an unfair failure; one stated but never
+    checked would be dead text costing context on every run."""
     context = build_technical_context()
 
-    assert "ONE LINE containing ONLY the serial command" in context
-    for example in ("  C", "  A320,B180,C400,D200", "  S"):
-        assert example in context
+    assert "Valid JSON only. No prose." in context
+    for field in ("hand", "intent", "gesture", "commands", "serial_command",
+                  "confidence", "safety"):
+        assert f'"{field}"' in context
 
-    # No trace of the old document contract.
-    assert '"$defs"' not in context
-    assert "confidence" not in context
-    assert "detected_pattern" not in context
+    for letter in "OCPRWYLMHUGSXI":
+        assert f'"{letter}"' in context
 
 
 def test_the_default_prompt_fits_a_small_local_context():
@@ -151,6 +171,8 @@ def test_the_default_prompt_fits_a_small_local_context():
 
 
 def test_technical_context_documents_the_c_ambiguity():
+    """The manual's one genuinely dangerous ambiguity: `C` alone closes the
+    whole hand, `C400` drives the middle finger. A model that reads it the
+    wrong way closes a fist when asked to extend one finger."""
     context = build_technical_context()
-    assert "DISAMBIGUATION" in context
-    assert "bare `C`" in context
+    assert "Bare C=CLOSE, C400=middle finger." in context

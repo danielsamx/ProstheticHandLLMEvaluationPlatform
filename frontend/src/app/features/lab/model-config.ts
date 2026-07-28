@@ -89,23 +89,42 @@ import { LabStore } from '@core/services/lab.store';
         </div>
       }
 
-      <!-- Sliders stay two-up: they need the width to be readable. -->
-      <div class="grid grid-cols-2 gap-x-3 gap-y-2">
+      <!--
+        The eight sampling parameters, four to a row.
+
+        They belong together: every one of them is an input to the same
+        decision, and splitting them across three grids implied a grouping that
+        does not exist. Bottom alignment holds the controls to a common baseline
+        despite a slider and a text field having different natural heights, so
+        the two rows read as a grid rather than as staggered pairs.
+
+        Four columns only from the md breakpoint up. Below that the sliders
+        would be too narrow to position with any precision, and a slider you
+        cannot aim is worse than one that takes a second row.
+      -->
+      <div class="grid grid-cols-2 items-end gap-x-3 gap-y-2 md:grid-cols-4">
         <div>
           <div class="flex items-baseline justify-between">
             <label class="lab-label">Temperature</label>
-            <span class="lab-mono text-xs text-pink">{{ store.temperature().toFixed(2) }}</span>
+            <!--
+              The warning used to be a line of text below the slider. In a
+              four-column grid that line would stretch the whole row, so it
+              became the colour of the read-out plus a tooltip: still visible
+              at a glance, no longer costing a row of height when it fires.
+            -->
+            <span class="lab-mono text-xs"
+                  [class]="store.temperature() > 0 ? 'text-amber' : 'text-pink'"
+                  [matTooltip]="store.temperature() > 0
+                    ? 'Non-zero temperature makes repeated runs non-deterministic.'
+                    : 'Greedy decoding: repeated runs should be identical.'">
+              {{ store.temperature().toFixed(2) }}
+            </span>
           </div>
           <mat-slider [min]="0" [max]="2" [step]="0.01" class="w-full">
             <input matSliderThumb
                    [ngModel]="store.temperature()"
                    (ngModelChange)="store.temperature.set($event)" />
           </mat-slider>
-          @if (store.temperature() > 0) {
-            <p class="text-[10px] text-amber">
-              Non-zero temperature makes repeated runs non-deterministic.
-            </p>
-          }
         </div>
 
         <div>
@@ -120,11 +139,6 @@ import { LabStore } from '@core/services/lab.store';
           </mat-slider>
         </div>
 
-      </div>
-
-      <!-- The numeric parameters are short values with short labels; three to a
-           row fits them without truncation and saves a third of the height. -->
-      <div class="grid grid-cols-3 gap-x-3 gap-y-2">
         <div>
           <label class="lab-label" [matTooltip]="topKTooltip()">Top-K</label>
           <mat-form-field appearance="outline" class="dense-field">
@@ -137,7 +151,7 @@ import { LabStore } from '@core/services/lab.store';
 
         <div>
           <label class="lab-label"
-                 matTooltip="Shares the context window with the prompt. A complete response is about 130 tokens.">
+                 matTooltip="Shares the context window with the prompt. A complete JSON response runs to about 200 tokens; below that it truncates mid-object and is recorded as a parse failure.">
             Max Tokens
           </label>
           <mat-form-field appearance="outline" class="dense-field">

@@ -15,14 +15,22 @@ class Severity(str, Enum):
 class ValidationStage(str, Enum):
     """The gate a response must clear before it can move anything.
 
-    Five stages, not seven. `schema` and `consistency` existed only to check a
-    JSON object against itself; now that the model emits the command line
-    directly there is no second representation to disagree with. Every stage
-    that stands between a response and the hardware remains.
+    Seven stages. The response carries two representations of the same
+    decision — a `serial_command` string and the `intent`/`gesture`/`commands`
+    structure beside it — so `schema` checks the object has the declared shape
+    and `consistency` checks the two representations agree. Neither stage
+    exists under a bare-command contract, because there is nothing for a lone
+    command line to contradict.
+
+    Order matters: each stage assumes its predecessors passed, and the first
+    error stops the pipeline. Reporting that a position is out of range is
+    meaningless if the command it came from could not be parsed.
     """
 
-    PARSE = "parse"              # a command line could be recovered
-    PROTOCOL = "protocol"        # it is a well-formed, existing command
+    PARSE = "parse"              # a JSON object could be recovered
+    SCHEMA = "schema"            # it matches the declared response shape
+    PROTOCOL = "protocol"        # serial_command is a well-formed command
+    CONSISTENCY = "consistency"  # the command agrees with the structure
     RANGE = "range"              # positions inside the active limit profile
     KINEMATIC = "kinematic"      # the pose is physically reachable
     SAFETY = "safety"            # exclusivity, speed, collision rules

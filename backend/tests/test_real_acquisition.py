@@ -59,12 +59,14 @@ def test_the_window_renders_into_a_prompt(raw_matrix):
     prompt = build_prompt(window, handedness=Handedness.RIGHT)
 
     block = prompt.dynamic_prompt
-    assert "404 samples @ 1000 Hz" in block
-    # 404 rows exceeds the print budget, so it is decimated and labelled.
-    assert "row is shown" in block
-    assert "computed from the complete window" in block
-    for index in range(1, 9):
-        assert f"| CH{index} |" in block
+    lines = block.splitlines()
+
+    # The matrix and nothing else: no acquisition metadata, no feature table.
+    assert all(ln.startswith("[") and ln.endswith("]") for ln in lines)
+    assert all(ln.count(",") == 7 for ln in lines)
+
+    # 404 rows exceeds the print budget, so the window is decimated.
+    assert 0 < len(lines) < window.sample_count
 
 
 def test_prompt_from_a_real_recording_fits_an_8k_context(raw_matrix):

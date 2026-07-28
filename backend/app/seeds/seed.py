@@ -414,7 +414,7 @@ async def _backfill_missing_configurations(session: AsyncSession) -> int:
                 model_id=model.id,
                 temperature=0.0,
                 top_p=1.0,
-                max_tokens=64,
+                max_tokens=320,
                 seed=42,
                 frequency_penalty=0.0,
                 presence_penalty=0.0,
@@ -461,7 +461,7 @@ async def _seed_configurations(session: AsyncSession, models: list[LlmModel]) ->
                 # The reply is a command line: one to four tokens. 64 is
                 # ample headroom, and every token beyond it is budget taken
                 # from the EMG matrix.
-                max_tokens=64,
+                max_tokens=320,
                 seed=42 if model.supports_seed else None,
                 frequency_penalty=0.0,
                 presence_penalty=0.0,

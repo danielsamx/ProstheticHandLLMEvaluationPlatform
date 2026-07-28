@@ -28,6 +28,11 @@ class ExecutionMetric(UUIDMixin, TimestampMixin, Base):
     is_bare_json: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     schema_compliant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     protocol_compliant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: The serial_command agreed with the intent, gesture and commands stated
+    #: beside it. Nullable: executions recorded under the bare-command contract
+    #: carried one representation, so there was nothing that could disagree and
+    #: `false` would assert a failure that never happened.
+    consistency_compliant: Mapped[bool | None] = mapped_column(Boolean, index=True)
     within_mechanical_limits: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     safety_compliant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

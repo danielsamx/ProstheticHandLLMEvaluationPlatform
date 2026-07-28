@@ -119,6 +119,8 @@ export interface ExecutionMetrics {
   is_bare_json: boolean;
   schema_compliant: boolean;
   protocol_compliant: boolean;
+  /** The serial_command agreed with the intent, gesture and commands beside it. */
+  consistency_compliant: boolean;
   within_mechanical_limits: boolean;
   safety_compliant: boolean;
   ground_truth_gesture: string | null;

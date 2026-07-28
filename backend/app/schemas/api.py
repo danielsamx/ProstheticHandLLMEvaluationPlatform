@@ -317,6 +317,7 @@ class MetricsOut(BaseModel):
     is_bare_json: bool
     schema_compliant: bool
     protocol_compliant: bool
+    consistency_compliant: bool | None = None
     within_mechanical_limits: bool
     safety_compliant: bool
     ground_truth_gesture: str | None = None

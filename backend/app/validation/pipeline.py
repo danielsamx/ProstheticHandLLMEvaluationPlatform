@@ -1,20 +1,31 @@
-"""Five-stage validation: raw model output -> executable hand pose.
+"""Seven-stage validation: raw model output -> executable hand pose.
 
-    parse -> protocol -> range -> kinematic -> safety
+    parse -> schema -> protocol -> consistency -> range -> kinematic -> safety
 
 Nothing reaches the simulator, and later the physical prosthesis, without
 clearing every stage. A failure at any point marks the whole execution FAILED,
 records the issue with a queryable code, and leaves the hand where it was.
 
-The model now emits the command line itself, so two former stages are gone:
-`schema` checked a JSON object against a declared shape, and `consistency`
-checked that object against the command line sitting beside it. With one
-representation instead of two there is nothing left to disagree.
+The stages are deliberately narrow. A single "is this response valid" check
+would answer yes or no; seven named gates answer *where* a model breaks down,
+and that is the measurement this platform is built to produce. A model that
+always emits well-formed JSON but routinely exceeds a mechanical stop fails
+differently from one that cannot produce JSON at all, and lumping the two
+together would erase the distinction that matters clinically.
+
+`consistency` is the stage that only exists because the response carries the
+same decision twice. It is not redundant bookkeeping: a `serial_command` of
+`A320` sitting beside `intent: "no_action"` is a model that has contradicted
+itself, and executing either half would be executing something the model did
+not, as a whole, decide.
 """
 
 from __future__ import annotations
 
+import json
 import re
+
+from pydantic import ValidationError
 
 from app.domain.hand_spec import (
     ACTUATORS,
@@ -30,7 +41,11 @@ from app.domain.hand_spec import (
 )
 from app.domain.kinematics import HandPose, pose_from_gesture, pose_from_positions
 from app.domain.protocol import ProtocolError, SerialFrame, parse_serial_command
-from app.schemas.llm_output import describe_command
+from app.schemas.llm_output import (
+    DETECTED_PATTERNS,
+    ProstheticCommand,
+    derive_pattern,
+)
 from app.validation.results import (
     Severity,
     ValidationIssue,
@@ -38,12 +53,8 @@ from app.validation.results import (
     ValidationStage,
 )
 
-#: A command line: letters and digits, commas, nothing else.
-_COMMAND_RE = re.compile(r"^[A-Z](?:-?\d+)?(?:\s*,\s*[A-Z](?:-?\d+)?)*$")
-
 #: Wrappers a model may put around the answer despite being told not to.
-_FENCE_RE = re.compile(r"```[a-z]*\s*(.*?)\s*```", re.DOTALL)
-_QUOTED_RE = re.compile(r"[\"\'`]([A-Z][^\"\'`\n]*)[\"\'`]")
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -51,40 +62,74 @@ _QUOTED_RE = re.compile(r"[\"\'`]([A-Z][^\"\'`\n]*)[\"\'`]")
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def extract_command(raw: str) -> tuple[str | None, str | None]:
-    """Recover the command line from whatever the model actually sent.
+def extract_json(raw: str) -> tuple[dict | None, str | None]:
+    """Recover the JSON object from whatever the model actually sent.
 
-    A conforming reply is the bare line. Recovery is still attempted for a
-    fenced block, a quoted string or a line buried in prose — not to be lenient,
-    but so the metrics can distinguish *how* a model deviates. A response that
-    needed repair is recorded as such and stops being a clean result, which is
-    more informative than collapsing every deviation into one parse failure.
+    A conforming reply parses directly. Recovery is still attempted for a fenced
+    block or an object embedded in prose — not to be lenient, but so the metrics
+    can distinguish *how* a model deviates. A response that needed repair is
+    recorded as such and stops counting as clean, which is more informative than
+    collapsing every deviation into one parse failure.
+
+    Returns ``(object, repair_note)``; the note is ``None`` when the reply was
+    already conforming, and on failure the object is ``None`` and the note is
+    the reason.
     """
     if not raw or not raw.strip():
         return None, "Empty response."
 
     text = raw.strip()
 
-    if _COMMAND_RE.match(text):
-        return text, None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed, None
+    except json.JSONDecodeError:
+        pass
 
     fenced = _FENCE_RE.search(text)
-    if fenced and _COMMAND_RE.match(fenced.group(1).strip()):
-        return fenced.group(1).strip(), "fenced_code_block"
+    if fenced:
+        try:
+            parsed = json.loads(fenced.group(1))
+            if isinstance(parsed, dict):
+                return parsed, "fenced_code_block"
+        except json.JSONDecodeError:
+            pass
 
-    quoted = _QUOTED_RE.search(text)
-    if quoted and _COMMAND_RE.match(quoted.group(1).strip()):
-        return quoted.group(1).strip(), "quoted_string"
+    # An object somewhere inside a longer reply. Braces are matched by scanning
+    # rather than by regex, because a regex cannot balance nesting and would cut
+    # the object short at the first inner `}`.
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[start:index + 1])
+                        if isinstance(parsed, dict):
+                            return parsed, "embedded_in_prose"
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
-    # A single command line somewhere in a longer reply.
-    for line in (ln.strip().rstrip(".") for ln in text.splitlines()):
-        if line and _COMMAND_RE.match(line):
-            return line, "embedded_in_prose"
-
-    return None, (
-        "No serial command could be recovered. The reply must be one line "
-        "containing only the command."
-    )
+    return None, "No JSON object could be recovered from the response."
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -104,39 +149,85 @@ def validate_response(
     report = ValidationReport(limit_profile=profile.id.value)
 
     # ── Stage 1: parse ──────────────────────────────────────────────────────
-    line, note = extract_command(raw_response)
-    if line is None:
+    payload, note = extract_json(raw_response)
+    if payload is None:
         report.add(ValidationIssue(
-            ValidationStage.PARSE, "NO_COMMAND",
-            note or "No command in the response.",
+            ValidationStage.PARSE, "NOT_JSON",
+            note or "The response is not a JSON object.",
             context={"raw_preview": (raw_response or "")[:500]},
         ))
         return _finish(report)
 
     if note:
         report.add(ValidationIssue(
-            ValidationStage.PARSE, "COMMAND_REQUIRED_REPAIR",
-            f"The reply was not a bare command line ({note}); it had to be extracted.",
+            ValidationStage.PARSE, "JSON_REQUIRED_REPAIR",
+            f"The reply was not bare JSON ({note}); the object had to be extracted.",
             severity=Severity.WARNING,
-            context={"recovered": line},
+            context={"recovered_via": note},
         ))
     report.stages_completed.append(ValidationStage.PARSE)
 
-    # ── Stage 2: protocol ───────────────────────────────────────────────────
+    # ── Stage 2: schema ─────────────────────────────────────────────────────
     try:
-        frame: SerialFrame = parse_serial_command(line)
+        command = ProstheticCommand.model_validate(payload)
+    except ValidationError as exc:
+        for error in exc.errors():
+            path = ".".join(str(part) for part in error["loc"])
+            report.add(ValidationIssue(
+                ValidationStage.SCHEMA, "SCHEMA_VIOLATION",
+                f"{path or 'response'}: {error['msg']}",
+                field_path=path or None,
+                context={"type": error["type"]},
+            ))
+        return _finish(report)
+
+    report.stages_completed.append(ValidationStage.SCHEMA)
+    report.parsed_command = command
+
+    # The hand is no longer stated in the prompt, so the model has to guess it.
+    # Recorded, never blocking: failing every response from a model that simply
+    # defaults to "right" would say more about the prompt than about the model.
+    if command.handedness is not expected_hand:
+        report.add(ValidationIssue(
+            ValidationStage.SCHEMA, "HAND_MISMATCH",
+            f"The response declares hand={command.hand!r} but the execution is "
+            f"configured for {expected_hand.value!r}. The configured hand is used.",
+            severity=Severity.WARNING,
+            field_path="hand",
+            context={"declared": command.hand, "expected": expected_hand.value},
+        ))
+
+    if command.detected_pattern and command.detected_pattern not in DETECTED_PATTERNS:
+        report.add(ValidationIssue(
+            ValidationStage.SCHEMA, "UNKNOWN_PATTERN_LABEL",
+            f"detected_pattern={command.detected_pattern!r} is not one of the "
+            "labels the system prompt enumerates.",
+            severity=Severity.WARNING,
+            field_path="detected_pattern",
+            context={"value": command.detected_pattern},
+        ))
+
+    # ── Stage 3: protocol ───────────────────────────────────────────────────
+    try:
+        frame: SerialFrame = parse_serial_command(command.serial_command)
     except ProtocolError as exc:
         report.add(ValidationIssue(
             ValidationStage.PROTOCOL, "MALFORMED_SERIAL", str(exc),
-            context={"command": line},
+            field_path="serial_command",
+            context={"command": command.serial_command},
         ))
         return _finish(report)
 
     report.stages_completed.append(ValidationStage.PROTOCOL)
     report.normalised_serial = frame.encode()
-    report.parsed_command = describe_command(frame, expected_hand)
 
-    # ── Stage 3: range ──────────────────────────────────────────────────────
+    # ── Stage 4: consistency ────────────────────────────────────────────────
+    _check_consistency(report, command, frame)
+    if report.errors:
+        return _finish(report)
+    report.stages_completed.append(ValidationStage.CONSISTENCY)
+
+    # ── Stage 5: range ──────────────────────────────────────────────────────
     positions = frame.positions
     for actuator, position in positions.items():
         low, high = profile.bounds(actuator)
@@ -150,11 +241,24 @@ def validate_response(
                 context={"actuator": actuator.value, "position": position,
                          "min": low, "max": high},
             ))
+
+    # A model that drove an actuator past a mechanical stop *and* reported the
+    # pose as within limits has done something worse than getting it wrong. The
+    # system prompt calls this out explicitly, so it is recorded explicitly.
+    if report.errors and command.safety is not None and command.safety.within_limits:
+        report.add(ValidationIssue(
+            ValidationStage.RANGE, "FALSE_SAFETY_ASSERTION",
+            "The response asserts within_limits=true for a command that exceeds "
+            "a documented range.",
+            severity=Severity.WARNING,
+            field_path="safety.within_limits",
+        ))
+
     if report.errors:
         return _finish(report)
     report.stages_completed.append(ValidationStage.RANGE)
 
-    # ── Stage 4: kinematic reachability ─────────────────────────────────────
+    # ── Stage 6: kinematic reachability ─────────────────────────────────────
     pose: HandPose | None = None
     if positions:
         pose = pose_from_positions(
@@ -183,7 +287,7 @@ def validate_response(
     report.resolved_pose = pose
     report.stages_completed.append(ValidationStage.KINEMATIC)
 
-    # ── Stage 5: safety ─────────────────────────────────────────────────────
+    # ── Stage 7: safety ─────────────────────────────────────────────────────
     _check_safety(report, frame, pose)
     if report.errors:
         return _finish(report)
@@ -191,6 +295,108 @@ def validate_response(
 
     report.passed = True
     return report
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage implementations
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _check_consistency(
+    report: ValidationReport, command: ProstheticCommand, frame: SerialFrame
+) -> None:
+    """The two halves of the response must describe the same decision.
+
+    Every check here compares the model's own words against its own command.
+    None of them can be resolved by preferring one side: the point is that the
+    model contradicted itself, and picking a winner would silently execute
+    something it never coherently decided.
+    """
+    gesture = frame.controls[0] if frame.controls else None
+    positions = frame.positions
+
+    # ── intent vs. what the command actually is ─────────────────────────────
+    if command.intent == "gesture":
+        if gesture is None:
+            report.add(ValidationIssue(
+                ValidationStage.CONSISTENCY, "INTENT_WITHOUT_GESTURE",
+                f"intent='gesture' but serial_command {command.serial_command!r} "
+                "carries positions, not a gesture.",
+                field_path="intent",
+            ))
+        elif gesture is ControlCommand.STOP:
+            report.add(ValidationIssue(
+                ValidationStage.CONSISTENCY, "STOP_DECLARED_AS_GESTURE",
+                "serial_command is S; intent must be 'stop', not 'gesture'.",
+                field_path="intent",
+            ))
+    elif command.intent == "stop":
+        if gesture is not ControlCommand.STOP:
+            report.add(ValidationIssue(
+                ValidationStage.CONSISTENCY, "STOP_INTENT_WITHOUT_STOP",
+                f"intent='stop' but serial_command is {command.serial_command!r}, "
+                "not S.",
+                field_path="intent",
+            ))
+    elif command.intent == "joint_positions":
+        if not positions:
+            report.add(ValidationIssue(
+                ValidationStage.CONSISTENCY, "INTENT_WITHOUT_POSITIONS",
+                f"intent='joint_positions' but serial_command "
+                f"{command.serial_command!r} carries no positions.",
+                field_path="intent",
+            ))
+    elif command.intent == "no_action":
+        # `O` holds the hand open and is the documented way to say "do nothing".
+        # Anything that moves an actuator is not inaction.
+        if positions or (gesture is not None and gesture is not ControlCommand.OPEN):
+            report.add(ValidationIssue(
+                ValidationStage.CONSISTENCY, "NO_ACTION_THAT_ACTS",
+                f"intent='no_action' but serial_command {command.serial_command!r} "
+                "commands a movement.",
+                field_path="intent",
+            ))
+
+    # ── gesture field vs. the command letter ────────────────────────────────
+    declared = command.gesture
+    actual = gesture.value if gesture is not None else None
+    if declared != actual:
+        report.add(ValidationIssue(
+            ValidationStage.CONSISTENCY, "GESTURE_MISMATCH",
+            f"gesture={declared!r} but serial_command {command.serial_command!r} "
+            f"resolves to {actual!r}.",
+            field_path="gesture",
+            context={"declared": declared, "actual": actual},
+        ))
+
+    # ── commands[] vs. the positions on the wire ────────────────────────────
+    declared_positions = {entry.actuator: entry.position for entry in command.commands}
+    actual_positions = {a.value: p for a, p in positions.items()}
+    if declared_positions != actual_positions:
+        report.add(ValidationIssue(
+            ValidationStage.CONSISTENCY, "COMMANDS_MISMATCH",
+            "The commands array does not match serial_command: "
+            f"{declared_positions} vs {actual_positions}.",
+            field_path="commands",
+            context={"declared": declared_positions, "actual": actual_positions},
+        ))
+
+    # ── the model's stated confidence vs. its own refusal ───────────────────
+    # The system prompt asks for no_action to come with low confidence. High
+    # confidence on a refusal is not dangerous, but it is a sign the model is
+    # not using the scale as instructed, which matters when confidence is being
+    # analysed as a variable.
+    if command.intent == "no_action" and command.confidence > 0.8:
+        report.add(ValidationIssue(
+            ValidationStage.CONSISTENCY, "CONFIDENT_REFUSAL",
+            f"intent='no_action' reported with confidence {command.confidence:.2f}; "
+            "the contract asks for low confidence on a refusal.",
+            severity=Severity.WARNING,
+            field_path="confidence",
+        ))
+
+    if command.detected_pattern is None:
+        command.detected_pattern = derive_pattern(gesture)
 
 
 def _check_safety(report: ValidationReport, frame: SerialFrame, pose: HandPose | None) -> None:

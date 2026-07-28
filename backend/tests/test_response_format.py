@@ -141,18 +141,16 @@ def test_a_downgrade_is_recorded_as_a_warning():
 # ── The run path asks for no structured output ──────────────────────────────
 
 
-def test_the_execution_path_requests_plain_text():
-    """The reply is a command line, not a document.
+def test_the_execution_path_asks_for_constrained_decoding():
+    """The reply is a JSON object, so the schema is sent as `response_format`.
 
-    There is no schema to enforce and no JSON mode to ask for, so the
-    capability negotiation that used to sit here has nothing left to decide.
-    `resolve_response_format` is retained because the LiteLLM layer is generic
-    and a future caller may want structured output again.
+    Constraining the decoder removes the largest single failure mode — prose
+    wrapped around the JSON — at the runtime, rather than catching it afterwards
+    in the parse stage where it has already cost a wasted execution.
     """
     source = (BACKEND / "app" / "services" / "execution_service.py").read_text()
-    assert 'response_format_mode="text"' in source
-    assert "json_schema=None" in source
-    assert "llm_json_schema" not in source
+    assert "response_format_mode=config.response_format" in source
+    assert "json_schema=response_json_schema()" in source
 
 
 # ── Retry policy ────────────────────────────────────────────────────────────

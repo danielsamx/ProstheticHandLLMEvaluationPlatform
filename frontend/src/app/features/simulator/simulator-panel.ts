@@ -70,7 +70,6 @@ import { CameraView, HandScene } from './hand-scene';
           <div class="text-sm font-semibold text-navy">
             HANDi EPN V3 · {{ store.handedness() === 'right' ? 'Right' : 'Left' }} hand
           </div>
-          <div class="lab-mono text-[10px] text-ink-500">profile {{ store.limitProfile() }}</div>
         </div>
 
         <!-- ── Hand toggle + camera reset ───────────────────────────────── -->

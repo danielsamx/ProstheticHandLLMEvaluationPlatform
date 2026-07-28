@@ -46,7 +46,8 @@ BASE_COLUMNS: tuple[str, ...] = (
     "intent", "predicted_gesture", "gesture_correct", "detected_pattern",
     "model_confidence", "calibration_error", "actuators_commanded",
     "serial_command", "is_valid_json", "is_bare_json", "schema_compliant",
-    "protocol_compliant", "within_mechanical_limits", "safety_compliant",
+    "protocol_compliant", "consistency_compliant", "within_mechanical_limits",
+    "safety_compliant",
     "error_count", "warning_count", "response_fingerprint",
     # Cost and speed
     "latency_ms", "prompt_tokens", "completion_tokens", "total_tokens",
@@ -161,6 +162,7 @@ def _flatten(
         "is_bare_json": metrics.is_bare_json if metrics else None,
         "schema_compliant": metrics.schema_compliant if metrics else None,
         "protocol_compliant": metrics.protocol_compliant if metrics else None,
+        "consistency_compliant": metrics.consistency_compliant if metrics else None,
         "within_mechanical_limits": metrics.within_mechanical_limits if metrics else None,
         "safety_compliant": metrics.safety_compliant if metrics else None,
         "error_count": validation.error_count if validation else None,

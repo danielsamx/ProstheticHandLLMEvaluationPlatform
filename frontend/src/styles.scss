@@ -155,6 +155,48 @@ body {
 // Slide toggles sit inline with these fields and were visually heavier.
 .mat-mdc-slide-toggle { --mdc-switch-state-layer-size: 34px; }
 
+// A further step down for toggles that share a status strip with read-only
+// chips. Material sizes the switch for a thumb; these are only ever clicked
+// with a pointer, and at the default 52x32 the control outweighed the
+// measurements printed beside it.
+//
+// This shrinks the rendered switch with a transform rather than by overriding
+// the track and handle tokens. Resizing them individually desynchronises the
+// parts: the track accepted a 30x16 override but the handle kept its own
+// dimensions, so a full-size handle sat on top of a half-size track and the
+// pair read as one solid blob. Material derives the handle travel, the state
+// layer offset and the handle-track width from each other, and those relations
+// only hold at the sizes it ships. Scaling the composed control keeps every
+// proportion intact and cannot be broken by an internal change.
+.dense-toggle {
+  // The one token that is self-contained: it sets the switch's own layout box,
+  // which is what dictates the height of the row the toggle sits in.
+  --mdc-switch-state-layer-size: 26px;
+
+  .mdc-switch {
+    transform: scale(0.72);
+
+    // Anchored left so the switch cannot drift away from its label, and the
+    // negative margin reclaims the strip that scale() leaves behind: a
+    // transform paints smaller but still reserves the original 52px box.
+    transform-origin: left center;
+    margin-right: -14px;
+  }
+
+  // The touch target is a 48px invisible overlay. It does not affect layout,
+  // but at this density it would extend over the chips either side and take
+  // clicks meant for them.
+  .mat-mdc-slide-toggle-touch-target {
+    width: 38px;
+    height: 26px;
+  }
+
+  .mat-internal-form-field > label {
+    padding-left: 2px;
+    line-height: 1.2;
+  }
+}
+
 // Buttons in the dense panels.
 .mat-mdc-outlined-button:not(:disabled),
 .mat-mdc-unelevated-button:not(:disabled) { letter-spacing: 0; }

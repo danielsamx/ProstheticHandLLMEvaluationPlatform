@@ -38,9 +38,15 @@ CHARS_PER_PROSE_TOKEN: float = 3.6
 #: prompt structure changes substantially.
 TOKENISER_CALIBRATION: float = 1.375
 
-#: Head-room kept for the reply. Matches the seeded `max_tokens`: the response
-#: is a command line, so 64 is generous.
-DEFAULT_COMPLETION_RESERVE: int = 64
+#: Head-room kept for the reply. Matches the seeded `max_tokens`.
+#:
+#: The response is a JSON object with up to six command entries, so 64 tokens —
+#: enough for a bare command line — would truncate mid-object and turn a correct
+#: decision into a parse failure. 320 covers the largest well-formed response
+#: with margin. Truncation is the failure mode to avoid here: it is
+#: indistinguishable from malformed output in the metrics, so it would be
+#: recorded as the model's fault rather than the budget's.
+DEFAULT_COMPLETION_RESERVE: int = 320
 
 _NUMBER_RE = re.compile(r"[-+]?\d*\.\d+|\d+")
 

@@ -226,7 +226,7 @@ import { LabStore } from '@core/services/lab.store';
                       {{ execution.metrics?.detected_pattern ?? '—' }}
                     </td>
                     <td class="px-3 py-1.5 text-center"
-                        matTooltip="The reply was the bare command, with nothing wrapped around it">
+                        matTooltip="The reply was bare JSON, with no fence or prose around it">
                       @if (execution.metrics?.is_bare_json) {
                         <mat-icon class="!h-4 !w-4 !text-[16px] text-navy">check</mat-icon>
                       } @else if (execution.metrics) {

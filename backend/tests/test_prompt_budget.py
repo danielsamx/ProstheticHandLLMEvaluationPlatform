@@ -37,10 +37,20 @@ def test_empty_text_costs_nothing():
     assert estimate_tokens("") == 0
 
 
-def test_estimate_grows_with_the_matrix():
-    small = build_prompt(synthesise_window("rest", seed=1, samples=32))
-    large = build_prompt(synthesise_window("rest", seed=1, samples=400))
-    assert estimate_tokens(large.dynamic_prompt) > estimate_tokens(small.dynamic_prompt)
+def test_the_prompt_no_longer_grows_with_the_length_of_the_recording():
+    """The row cap is what makes prompt size predictable. A 32-sample window and
+    a 400-sample window now cost within a few percent of each other, because the
+    longer one is decimated to the same printed height.
+
+    This is the property the 8k context budget depends on: a researcher cannot
+    accidentally overflow a model by loading a longer CSV.
+    """
+    small = estimate_tokens(build_prompt(
+        synthesise_window("rest", seed=1, samples=32)).dynamic_prompt)
+    large = estimate_tokens(build_prompt(
+        synthesise_window("rest", seed=1, samples=400)).dynamic_prompt)
+
+    assert abs(large - small) / small < 0.10
 
 
 # ── Budget ──────────────────────────────────────────────────────────────────
@@ -84,18 +94,20 @@ def test_a_large_completion_reserve_is_called_out():
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
         context_window=7000,
-        completion_reserve=4096,
+        completion_reserve=6144,
     )
     assert not report.fits
     assert any("reserved for the reply" in line for line in report.advice)
 
 
-def test_the_capped_matrix_is_never_the_dominant_block():
-    """Capping the printed rows is what makes the prompt size predictable: it no
-    longer scales with the length of the recording."""
+def test_the_matrix_block_is_the_same_size_whatever_the_recording_length():
+    """A 4,000-sample recording must cost no more prompt than a 64-sample one."""
+    sizes = []
     for samples in (64, 404, 4000):
         _, report = _report(samples=samples)
-        assert report.breakdown["dynamic_prompt"] <= report.breakdown["technical_context"]
+        sizes.append(report.breakdown["dynamic_prompt"])
+
+    assert max(sizes) - min(sizes) < 0.10 * min(sizes), sizes
 
 
 def test_an_unknown_context_window_is_not_reported_as_a_failure():
@@ -121,7 +133,7 @@ def test_completion_reserve_is_deducted():
         context_window=8192,
     )
     assert check(**kwargs, completion_reserve=128).fits
-    assert not check(**kwargs, completion_reserve=4096).fits
+    assert not check(**kwargs, completion_reserve=6144).fits
 
 
 # ── The two size fixes ──────────────────────────────────────────────────────

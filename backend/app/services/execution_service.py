@@ -48,6 +48,7 @@ from app.schemas.emg import EmgWindow
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services.metrics_service import compute_metrics
+from app.schemas.llm_output import response_json_schema
 from app.validation.pipeline import validate_response
 from app.validation.results import ValidationReport
 
@@ -271,10 +272,12 @@ async def run_execution(
             api_base=provider.api_base,
             is_local=provider.is_local,
             sampling=config.to_litellm_kwargs(),
-            # The reply is a command line, not a document: there is no schema
-            # to enforce and no JSON mode to ask for.
-            response_format_mode="text",
-            json_schema=None,
+            # Constrained decoding against the response schema. This removes
+            # the largest single failure mode — prose wrapped around the JSON —
+            # at the runtime rather than catching it afterwards in the parse
+            # stage, where it would already have cost a wasted execution.
+            response_format_mode=config.response_format,
+            json_schema=response_json_schema(),
         )
     except LlmCallError as exc:
         execution.status = (
