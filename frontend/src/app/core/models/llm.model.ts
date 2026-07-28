@@ -92,6 +92,9 @@ export interface PromptPreview {
   context_window: number | null;
   fits_context: boolean;
   budget_advice: string[];
+  /** What the preview actually rendered, echoed back by the server. */
+  matrix_rows_sent: number;
+  dynamic_content: DynamicContent;
 }
 
 export interface ValidationIssue {

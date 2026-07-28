@@ -109,7 +109,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
           <label class="lab-label">Dynamic prompt</label>
           <mat-button-toggle-group class="dense-toggle-group"
                                   [ngModel]="store.dynamicContent()"
-                                  (ngModelChange)="store.dynamicContent.set($event)"
+                                  (ngModelChange)="store.setDynamicContent($event)"
                                   style="height: 38px; min-height: 38px; display: inline-flex; flex-direction: row; flex-wrap: nowrap; width: auto; align-items: center; border-radius: 6px; overflow: hidden;"
                                   hideSingleSelectionIndicator>
             <mat-button-toggle value="matrix"
@@ -151,20 +151,70 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
           the window is long enough for the choice to matter. Showing it always
           would put a knob on screen that most runs never need to touch.
         -->
-        @if (store.dynamicContent() !== 'features' && store.sampleCount() > 64) {
-          <div class="w-28">
+        @if (store.dynamicContent() !== 'features'
+            && (store.sampleCount() > 64 || store.matrixMaxRows() !== null)) {
+          <div>
             <label class="lab-label"
                    matTooltip="Blank sends every row. A cap decimates across the whole window rather than truncating it, so the excerpt still spans the movement.">
               Rows sent
             </label>
-            <mat-form-field appearance="outline" class="dense-field w-full">
-              <input matInput type="number" min="1" [placeholder]="store.sampleCount() + ' (all)'"
-                     [ngModel]="store.matrixMaxRows()"
-                     (ngModelChange)="store.matrixMaxRows.set($event === null || $event === '' ? null : +$event)" />
-            </mat-form-field>
+            <!--
+              A number input fires on every keystroke, so binding it straight to
+              the run would mean typing "128" briefly requested 1 row and then
+              12. Hence a draft.
+
+              But a draft that only commits on a button press is its own trap:
+              type 32, press Run, and the run silently uses the old value. So it
+              also commits on blur and on Enter. The button stays because it is
+              discoverable and gives the change an explicit moment — it is no
+              longer the *only* way to apply it.
+            -->
+            <div class="flex items-center gap-1">
+              <mat-form-field appearance="outline" class="dense-field !w-24">
+                <input matInput type="number" min="1" [max]="store.sampleCount()"
+                       [placeholder]="store.sampleCount() + ' (all)'"
+                       [ngModel]="rowsDraft()"
+                       (ngModelChange)="rowsDraft.set($event === null || $event === '' ? null : +$event)"
+                       (blur)="applyRows()"
+                       (keyup.enter)="applyRows()" />
+              </mat-form-field>
+              <button mat-flat-button color="primary"
+                      class="!mb-0.5 !h-[34px] !min-w-0 !px-2.5 !text-[11px]"
+                      [disabled]="!rowsChanged()"
+                      [matTooltip]="rowsChanged()
+                        ? 'Apply this row count and re-render the preview'
+                        : 'Already applied'"
+                      (click)="applyRows()">
+                Apply
+              </button>
+            </div>
           </div>
         }
       </div>
+
+      <!--
+        What is actually in effect, stated by the server rather than re-derived
+        here. If the panel computed this itself it could disagree with the
+        prompt that gets sent, which is precisely the confusion this line exists
+        to end.
+      -->
+      @if (store.promptPreview(); as preview) {
+        <div class="flex items-center gap-1.5 text-[11px]"
+             [class]="preview.matrix_rows_sent < store.sampleCount()
+               ? 'text-amber' : 'text-ink-500'">
+          <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">
+            {{ preview.dynamic_content === 'features' ? 'functions' : 'table_rows' }}
+          </mat-icon>
+          @if (preview.dynamic_content === 'features') {
+            The prompt carries the derived descriptors only — no matrix rows.
+          } @else if (preview.matrix_rows_sent >= store.sampleCount()) {
+            The prompt carries all {{ store.sampleCount() }} rows.
+          } @else {
+            The prompt carries {{ preview.matrix_rows_sent }} of
+            {{ store.sampleCount() }} rows, evenly spaced across the window.
+          }
+        </div>
+      }
 
       <!-- ── Traces ────────────────────────────────────────────────────── -->
       <ph-emg-matrix-plot
@@ -349,6 +399,29 @@ export class EmgPanel {
   protected readonly store = inject(LabStore);
   protected readonly stream = inject(EmgStreamService);
   protected readonly Math = Math;
+
+  /**
+   * Draft row cap, committed by Apply rather than on every keystroke.
+   *
+   * Seeded from the store so the field opens showing what is actually in
+   * effect, and compared against it so the button can say whether there is
+   * anything to apply.
+   */
+  protected readonly rowsDraft = signal<number | null>(this.store.matrixMaxRows());
+
+  protected rowsChanged(): boolean {
+    return this.rowsDraft() !== this.store.matrixMaxRows();
+  }
+
+  protected applyRows(): void {
+    const value = this.rowsDraft();
+    // A cap at or above the window length is not a cap. Storing it as null
+    // keeps one meaning for "everything" instead of two that behave alike but
+    // record differently.
+    const capped = value === null || value >= this.store.sampleCount() ? null : Math.max(1, value);
+    this.rowsDraft.set(capped);
+    void this.store.setMatrixMaxRows(capped);
+  }
 
   /** Acquisition units span orders of magnitude; fixed decimals do not suit them. */
   protected num(value: number): string {

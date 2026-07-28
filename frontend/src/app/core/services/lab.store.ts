@@ -681,6 +681,31 @@ export class LabStore {
   }
 
   // ── Prompt preview ────────────────────────────────────────────────────────
+  /**
+   * Change what the dynamic block carries, and show the result immediately.
+   *
+   * The mode is a discrete choice with no intermediate states, so there is
+   * nothing to stage and nothing to confirm — deferring it behind a button
+   * would only create a window in which the panel and the prompt disagree.
+   */
+  async setDynamicContent(mode: DynamicContent): Promise<void> {
+    if (this.dynamicContent() === mode) return;
+    this.dynamicContent.set(mode);
+    await this.refreshPreview();
+  }
+
+  /**
+   * Commit the matrix row cap and re-render.
+   *
+   * Separate from the mode because a number field has intermediate states: it
+   * fires on every keystroke, so "128" passes through 1 and 12 on the way. The
+   * component holds a draft and calls this on blur, Enter or Apply.
+   */
+  async setMatrixMaxRows(rows: number | null): Promise<void> {
+    this.matrixMaxRows.set(rows);
+    await this.refreshPreview();
+  }
+
   async refreshPreview(): Promise<void> {
     this.previewLoading.set(true);
     try {

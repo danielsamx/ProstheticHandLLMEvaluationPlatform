@@ -15,6 +15,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { Handedness } from '@core/models/hand.model';
 import { LabStore } from '@core/services/lab.store';
+import { ProsthesisLinkService } from '@core/services/prosthesis-link.service';
 import { SimulatorBridgeService } from '@core/services/simulator-bridge.service';
 import { CameraView, HandScene } from './hand-scene';
 
@@ -111,8 +112,58 @@ import { CameraView, HandScene } from './hand-scene';
               </button>
             }
           </div>
+
+          <!--
+            The physical hand.
+
+            Every validated movement goes to the simulator. When this link is
+            open it goes to the prosthesis as well — the simulator is never
+            bypassed, so what you see is always what the hardware was told.
+          -->
+          <button
+            class="flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-panel transition-colors"
+            [class]="link.connected()
+              ? 'border-navy bg-navy text-white'
+              : 'border-ink-200 bg-white text-ink-500 hover:text-navy'"
+            [matTooltip]="linkTooltip()"
+            (click)="toggleLink()"
+          >
+            <mat-icon class="!h-4 !w-4 !text-[16px]">
+              {{ link.connected() ? 'bluetooth_connected' : 'bluetooth' }}
+            </mat-icon>
+            <span class="hidden lg:inline">
+              {{ link.connected() ? (link.deviceName() ?? 'Prosthesis') : 'Connect hand' }}
+            </span>
+            @if (link.connected() && link.sentCount()) {
+              <span class="lab-mono opacity-70">· {{ link.sentCount() }}</span>
+            }
+          </button>
         </div>
       </div>
+
+      <!--
+        Link failures need saying out loud. A prosthesis that silently stopped
+        receiving commands while the simulator carried on moving is the single
+        most misleading state this panel can be in.
+      -->
+      @if (link.error(); as message) {
+        <div class="absolute left-1/2 top-20 w-[82%] -translate-x-1/2 rounded-lg border border-amber bg-white/95 p-3 text-[11px] shadow-panel backdrop-blur">
+          <div class="flex items-start gap-2">
+            <mat-icon class="!h-4 !w-4 !text-[16px] text-amber">link_off</mat-icon>
+            <div class="min-w-0">
+              <div class="font-semibold text-navy">The prosthesis is not receiving commands</div>
+              <div class="lab-mono mt-0.5 break-words text-ink-600">{{ message }}</div>
+              <div class="mt-1 text-ink-500">
+                The simulator is unaffected — validated movements still render here.
+              </div>
+            </div>
+            <button class="ml-auto text-ink-400 hover:text-pink"
+                    matTooltip="Dismiss" (click)="link.error.set(null)">
+              <mat-icon class="!h-4 !w-4 !text-[16px]">close</mat-icon>
+            </button>
+          </div>
+        </div>
+      }
 
       <!-- ── Rejection banner: the hand stays still, and says why ───────── -->
       @if (bridge.lastRejection(); as rejection) {
@@ -194,9 +245,47 @@ import { CameraView, HandScene } from './hand-scene';
 export class SimulatorPanel implements AfterViewInit, OnDestroy {
   protected readonly store = inject(LabStore);
   protected readonly bridge = inject(SimulatorBridgeService);
+  protected readonly link = inject(ProsthesisLinkService);
   protected readonly scene = new HandScene();
 
   private readonly viewport = viewChild.required<ElementRef<HTMLDivElement>>('viewport');
+
+  /**
+   * Connect or disconnect the physical hand.
+   *
+   * Web Serial is tried first because it is the transport that matches this
+   * firmware: the prosthesis speaks Bluetooth SPP, which is Bluetooth *Classic*
+   * and therefore unreachable by Web Bluetooth. Once the OS has paired the
+   * device, SPP appears as a virtual serial port that this API can open at the
+   * documented 115200 baud.
+   *
+   * BLE is attempted only if the browser has no Web Serial at all, for firmware
+   * builds that expose a Nordic UART service instead.
+   */
+  protected async toggleLink(): Promise<void> {
+    if (this.link.connected()) {
+      // Return the hand to OPEN before dropping the link. The safety section
+      // requires it: left in a grip the tendons stay loaded, which is bad for
+      // the printed linkage and worse for whatever is being held.
+      await this.link.releaseToOpen();
+      await this.link.disconnect();
+      return;
+    }
+    await this.link.connect(this.link.supports('serial') ? 'serial' : 'ble');
+  }
+
+  protected linkTooltip(): string {
+    if (this.link.connected()) {
+      return `Connected over ${this.link.transport()}. Validated commands go to the `
+        + 'prosthesis and the simulator. Click to release to OPEN and disconnect.';
+    }
+    if (!this.link.supports('serial') && !this.link.supports('bluetooth' as never)) {
+      return 'This browser cannot reach serial or Bluetooth devices. Chrome or Edge on desktop is required.';
+    }
+    return 'Connect the HANDi EPN V3. Pair it in the operating system first — '
+      + 'its Bluetooth SPP link appears as a serial port. Without a device, '
+      + 'commands still drive the simulator.';
+  }
 
   protected readonly sides: { value: Handedness; label: string; icon: string }[] = [
     { value: 'left', label: 'Left', icon: 'back_hand' },

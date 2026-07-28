@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
@@ -175,15 +175,65 @@ import { firstValueFrom } from 'rxjs';
           </div>
 
           @if (store.promptPreview(); as preview) {
-            <pre class="lab-mono h-40 overflow-auto rounded border border-ink-200 bg-ink-50 p-2.5 text-[11px] leading-relaxed text-ink-700">{{ preview.dynamic_prompt }}</pre>
+            <!--
+              The dynamic block alone, or everything the model receives.
 
-            <div class="grid grid-cols-4 gap-2 text-[10px]">
+              "Just this block" is the right default while editing a template,
+              but it answers the wrong question when a prompt overflows: the
+              overflow is a property of the three blocks together, and reading
+              them in three separate places is how the wrong one gets blamed.
+            -->
+            <div class="flex items-center gap-1 text-[10px]">
+              <button class="rounded px-2 py-0.5 font-semibold transition-colors"
+                      [class]="fullPrompt() ? 'text-ink-500 hover:text-navy' : 'bg-navy text-white'"
+                      (click)="fullPrompt.set(false)">
+                Dynamic block
+              </button>
+              <button class="rounded px-2 py-0.5 font-semibold transition-colors"
+                      [class]="fullPrompt() ? 'bg-navy text-white' : 'text-ink-500 hover:text-navy'"
+                      (click)="fullPrompt.set(true)">
+                Full prompt
+              </button>
+              <span class="ml-auto text-ink-400">
+                {{ preview.dynamic_content }}
+                @if (preview.matrix_rows_sent) {
+                  · {{ preview.matrix_rows_sent }} of {{ store.sampleCount() }} rows
+                }
+              </span>
+              <button class="ml-2 text-ink-400 hover:text-pink"
+                      matTooltip="Copy what is shown"
+                      (click)="copy(fullPrompt() ? preview.full_prompt : preview.dynamic_prompt)">
+                <mat-icon class="!h-4 !w-4 !text-[16px]">
+                  {{ copied() ? 'check' : 'content_copy' }}
+                </mat-icon>
+              </button>
+            </div>
+
+            <pre class="lab-mono overflow-auto rounded border border-ink-200 bg-ink-50 p-2.5 text-[11px] leading-relaxed text-ink-700"
+                 [class]="fullPrompt() ? 'h-72' : 'h-40'">{{ fullPrompt() ? preview.full_prompt : preview.dynamic_prompt }}</pre>
+
+            <!--
+              The token budget, as four cards.
+
+              Each block gets its own colour so the eye can go straight to the
+              one that dominates without reading four numbers first — on a real
+              recording the dynamic block is an order of magnitude larger than
+              the other two, and that is the whole story of whether a prompt
+              fits.
+            -->
+            <div class="grid grid-cols-4 gap-1.5">
               @for (row of tokenRows(preview); track row.label) {
-                <div class="rounded border p-2"
-                     [class]="row.warn ? 'border-amber bg-amber/10' : 'border-ink-200 bg-ink-50'">
-                  <div class="lab-label">{{ row.label }}</div>
-                  <div class="lab-mono" [class]="row.warn ? 'text-navy' : 'text-ink-600'">
-                    {{ row.value }}
+                <div class="flex items-center gap-1.5 rounded-md px-2 py-1.5"
+                     [class]="row.tone"
+                     [matTooltip]="row.hint">
+                  <mat-icon class="!h-4 !w-4 shrink-0 !text-[16px] opacity-70">
+                    {{ row.icon }}
+                  </mat-icon>
+                  <div class="min-w-0 leading-none">
+                    <div class="lab-mono text-[12px] font-semibold">{{ row.value }}</div>
+                    <div class="mt-0.5 truncate text-[9px] uppercase tracking-wider opacity-70">
+                      {{ row.label }}
+                    </div>
                   </div>
                 </div>
               }
@@ -200,15 +250,6 @@ import { firstValueFrom } from 'rxjs';
                 }
               </div>
             }
-
-            <div class="rounded border border-ink-200 bg-ink-50 p-2 text-[10px]">
-              <span class="lab-label">Frozen context hash</span>
-              <div class="lab-mono break-all text-ink-500">{{ preview.frozen_context_sha256 }}</div>
-              <p class="mt-1 text-ink-500">
-                Runs sharing this saw identical constants, so differences are
-                attributable to the model. Editing block 1 or 2 changes it.
-              </p>
-            </div>
           }
         </div>
       </mat-tab>
@@ -222,6 +263,10 @@ import { firstValueFrom } from 'rxjs';
 })
 export class PromptBlocks {
   protected readonly store = inject(LabStore);
+
+  /** Show the three blocks joined, or only the one being edited. */
+  protected readonly fullPrompt = signal(false);
+  protected readonly copied = signal(false);
   private readonly dialog = inject(MatDialog);
 
   protected selectSystem(id: string): void {
@@ -255,25 +300,67 @@ export class PromptBlocks {
   }
 
   /** Token accounting shown beside the preview. */
+  /**
+   * The token budget as four cards, one per block plus the total.
+   *
+   * Colour carries the meaning: navy for the two frozen blocks (fixed cost,
+   * paid on every run), pink for the block that varies, and the total in amber
+   * or pink depending on whether it fits. On a real recording the dynamic block
+   * is an order of magnitude larger than the other two, and seeing that at a
+   * glance is more useful than reading four numbers and comparing them.
+   */
   protected tokenRows(preview: {
     token_breakdown: Record<string, number>;
     estimated_prompt_tokens: number;
     context_window: number | null;
     fits_context: boolean;
-  }): { label: string; value: string; warn: boolean }[] {
+  }): { label: string; value: string; icon: string; tone: string; hint: string }[] {
     const b = preview.token_breakdown ?? {};
+    const total = preview.estimated_prompt_tokens;
+    const share = (n: number) => (total ? ` · ${Math.round((n / total) * 100)}% of the prompt` : '');
+
     return [
-      { label: 'System', value: String(b['system_prompt'] ?? 0), warn: false },
-      { label: 'Context', value: String(b['technical_context'] ?? 0), warn: false },
-      { label: 'Dynamic', value: String(b['dynamic_prompt'] ?? 0), warn: false },
       {
-        label: 'Total',
-        value: preview.context_window
-          ? `${preview.estimated_prompt_tokens} / ${preview.context_window}`
-          : String(preview.estimated_prompt_tokens),
-        warn: !preview.fits_context,
+        label: 'System',
+        value: String(b['system_prompt'] ?? 0),
+        icon: 'psychology',
+        tone: 'bg-navy/5 text-navy',
+        hint: 'Block 1 — behaviour and output discipline. Identical on every run.'
+          + share(b['system_prompt'] ?? 0),
+      },
+      {
+        label: 'Context',
+        value: String(b['technical_context'] ?? 0),
+        icon: 'precision_manufacturing',
+        tone: 'bg-navy/10 text-navy',
+        hint: 'Block 2 — the hand: commands, ranges, protocol, safety. Identical on every run.'
+          + share(b['technical_context'] ?? 0),
+      },
+      {
+        label: 'Dynamic',
+        value: String(b['dynamic_prompt'] ?? 0),
+        icon: 'monitor_heart',
+        tone: 'bg-pink/10 text-pink',
+        hint: 'Block 3 — the EMG for this run. The only block that changes, and usually the largest.'
+          + share(b['dynamic_prompt'] ?? 0),
+      },
+      {
+        label: preview.context_window ? 'Of context' : 'Total',
+        value: preview.context_window ? `${total} / ${preview.context_window}` : String(total),
+        icon: preview.fits_context ? 'check_circle' : 'error_outline',
+        tone: preview.fits_context ? 'bg-amber/20 text-navy' : 'bg-pink text-white',
+        hint: preview.context_window
+          ? 'The context the model was loaded with — not what its architecture supports.'
+          : 'Select a model to compare this against its context window.',
       },
     ];
+  }
+
+  /** Copy whichever view is on screen. */
+  protected async copy(text: string): Promise<void> {
+    await navigator.clipboard.writeText(text);
+    this.copied.set(true);
+    setTimeout(() => this.copied.set(false), 1200);
   }
 
   protected selectContext(id: string): void {

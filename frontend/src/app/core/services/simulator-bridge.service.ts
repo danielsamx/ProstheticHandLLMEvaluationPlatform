@@ -1,7 +1,8 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 
 import { environment } from '@env/environment';
 import { MovementFrame, RejectionFrame } from '../models/hand.model';
+import { ProsthesisLinkService } from './prosthesis-link.service';
 
 type SocketState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
@@ -19,6 +20,8 @@ export class SimulatorBridgeService {
   readonly lastMovement = signal<MovementFrame | null>(null);
   readonly lastRejection = signal<RejectionFrame | null>(null);
   readonly receivedCount = signal(0);
+
+  private readonly link = inject(ProsthesisLinkService);
 
   private socket: WebSocket | null = null;
   private heartbeat?: ReturnType<typeof setInterval>;
@@ -45,9 +48,7 @@ export class SimulatorBridgeService {
       }
       const frame = payload as { type?: string };
       if (frame.type === 'movement') {
-        this.lastMovement.set(payload as MovementFrame);
-        this.lastRejection.set(null);
-        this.receivedCount.update((n) => n + 1);
+        this.deliver(payload as MovementFrame);
       } else if (frame.type === 'rejected') {
         this.lastRejection.set(payload as RejectionFrame);
       }
@@ -73,8 +74,29 @@ export class SimulatorBridgeService {
 
   /** Push a locally-produced frame (used when a run returns over HTTP). */
   emitLocal(frame: MovementFrame): void {
+    this.deliver(frame);
+  }
+
+  /**
+   * One movement, two destinations.
+   *
+   * The simulator always renders it. The prosthesis receives it too, but only
+   * if a link happens to be open — and the send is deliberately not awaited, so
+   * a slow or wedged serial write cannot hold up the 3D view. The hardware is
+   * an addition to the experiment, never a prerequisite for it: a run with no
+   * hand attached must produce exactly the same record as one with.
+   *
+   * Only frames that reach here can ever be transmitted, and the backend only
+   * publishes a frame after all seven validation stages pass. There is no route
+   * from a raw model response to the motor driver.
+   */
+  private deliver(frame: MovementFrame): void {
     this.lastMovement.set(frame);
     this.lastRejection.set(null);
     this.receivedCount.update((n) => n + 1);
+
+    if (this.link.connected()) {
+      void this.link.send(frame);
+    }
   }
 }
