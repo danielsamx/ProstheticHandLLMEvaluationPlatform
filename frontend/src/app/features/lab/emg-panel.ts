@@ -12,7 +12,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
-import { MatSelectModule } from '@angular/material/select';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -22,12 +21,17 @@ import { LabStore } from '@core/services/lab.store';
 import { EmgMatrixPlot } from './emg-matrix-plot';
 
 /**
- * The EMG stimulus: an N x 8 matrix of raw normalised samples.
+ * The EMG stimulus: an N x 8 matrix of raw converter output.
  *
- * Three ways in — paste, synthesise, or stream live — because a matrix is not
- * something anyone types by hand. The derived feature table is shown read-only
- * beneath it: those numbers come from the signal, so letting them be edited
- * independently would allow a window whose summary contradicts its waveform.
+ * Three ways in — import a file, paste rows, or stream live — because a matrix
+ * is not something anyone types by hand. All three carry real acquisition; the
+ * synthetic generator was removed from this row because a run against
+ * synthesised signals tests the platform rather than the model, and sitting
+ * first it read as the normal way to load data.
+ *
+ * The traces below are a read-out, not an editor. They are drawn from the
+ * matrix, so allowing them to be edited would permit a window whose picture
+ * disagrees with its numbers.
  */
 @Component({
   selector: 'ph-emg-panel',
@@ -35,7 +39,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     FormsModule, MatButtonModule, MatButtonToggleModule, MatFormFieldModule,
-    MatIconModule, MatInputModule, MatSelectModule, MatSlideToggleModule,
+    MatIconModule, MatInputModule, MatSlideToggleModule,
     MatTooltipModule,
     EmgMatrixPlot,
   ],
@@ -222,35 +226,46 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         [labels]="store.channelLabels"
         [rms]="rmsValues()" />
 
-      <!-- ── Sources ───────────────────────────────────────────────────── -->
-      @if (!store.liveMode()) {
-        <div class="flex flex-wrap items-center gap-2">
-          <mat-form-field appearance="outline" class="dense-field !w-56">
-            <mat-select placeholder="Load labelled synthetic window"
-                        [ngModel]="null"
-                        (ngModelChange)="$event && store.loadSynthetic($event)">
-              @for (g of store.syntheticGestures(); track g) {
-                <mat-option [value]="g">{{ g }}</mat-option>
-              }
-            </mat-select>
-          </mat-form-field>
+      <!--
+        ── Sources ─────────────────────────────────────────────────────────
 
+        Four actions, each taking a quarter of the row. A grid rather than a
+        flex row because the buttons carry labels of very different lengths,
+        and left to themselves they sized to their text — which made the row
+        read as an arbitrary ranking of importance rather than four equal ways
+        in.
+
+        The synthetic-window picker is gone. It loaded generated signals with a
+        known answer, which is useful for testing the platform but is not real
+        acquisition, and sitting first in this row it read as the primary way to
+        load data. Runs against synthesised EMG are not evidence about the
+        model. The generator is still there behind /emg/synthetic for anyone
+        checking the pipeline itself.
+      -->
+      @if (!store.liveMode()) {
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                  matTooltip="Paste rows directly: CSV, TSV, whitespace or JSON."
                   (click)="showPaste.set(!showPaste())">
             <mat-icon class="!h-4 !w-4 !text-[16px]">content_paste</mat-icon>
             {{ showPaste() ? 'Hide paste' : 'Paste matrix' }}
           </button>
 
-          <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]" (click)="pickFile()">
+          <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                  matTooltip="Load an acquisition file. A CH0…CH7 or CH1…CH8 header is detected and skipped."
+                  (click)="pickFile()">
             <mat-icon class="!h-4 !w-4 !text-[16px]">upload_file</mat-icon> Import CSV
           </button>
 
-          <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]" (click)="copyCsv()">
+          <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                  matTooltip="Copy the current window as CSV."
+                  (click)="copyCsv()">
             <mat-icon class="!h-4 !w-4 !text-[16px]">download</mat-icon>
             {{ copied() ? 'Copied' : 'Copy CSV' }}
           </button>
 
           <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                  matTooltip="Discard the loaded window."
                   (click)="store.resetMatrix()">
             <mat-icon class="!h-4 !w-4 !text-[16px]">restart_alt</mat-icon> Clear
           </button>

@@ -77,6 +77,7 @@ export interface PromptVersion {
 export interface PromptPreview {
   system_prompt: string;
   technical_context: string;
+  emg_context: string;
   dynamic_prompt: string;
   full_prompt: string;
   messages: { role: string; content: string }[];
@@ -84,6 +85,7 @@ export interface PromptPreview {
   char_counts: Record<string, number>;
   system_prompt_sha256: string;
   technical_context_sha256: string;
+  emg_context_sha256: string;
   dynamic_prompt_sha256: string;
   frozen_context_sha256: string;
   full_prompt_sha256: string;

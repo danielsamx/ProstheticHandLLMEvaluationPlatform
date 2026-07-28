@@ -113,6 +113,9 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     technical_context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("technical_context_versions.id", ondelete="SET NULL")
     )
+    emg_context_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("emg_context_versions.id", ondelete="SET NULL")
+    )
     dynamic_prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("dynamic_prompt_templates.id", ondelete="SET NULL")
     )
@@ -177,10 +180,12 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     # ── The exact prompt sent ───────────────────────────────────────────────
     system_prompt_text: Mapped[str | None] = mapped_column(Text)
     technical_context_text: Mapped[str | None] = mapped_column(Text)
+    emg_context_text: Mapped[str | None] = mapped_column(Text)
     dynamic_prompt_text: Mapped[str | None] = mapped_column(Text)
     messages_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     system_prompt_sha256: Mapped[str | None] = mapped_column(String(64))
     technical_context_sha256: Mapped[str | None] = mapped_column(String(64))
+    emg_context_sha256: Mapped[str | None] = mapped_column(String(64))
     dynamic_prompt_sha256: Mapped[str | None] = mapped_column(String(64))
     frozen_context_sha256: Mapped[str | None] = mapped_column(String(64))
     full_prompt_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -231,6 +236,7 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     emg_window = relationship("EmgWindowRecord", back_populates="executions", lazy="joined")
     system_prompt_version = relationship("SystemPromptVersion", back_populates="executions")
     technical_context_version = relationship("TechnicalContextVersion", back_populates="executions")
+    emg_context_version = relationship("EmgContextVersion", back_populates="executions")
     dynamic_prompt_template = relationship("DynamicPromptTemplate", back_populates="executions")
     validation_result = relationship(
         "ValidationResult", back_populates="execution",

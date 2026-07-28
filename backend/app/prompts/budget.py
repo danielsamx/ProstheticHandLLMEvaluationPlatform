@@ -88,6 +88,7 @@ def check(
     system_prompt: str,
     technical_context: str,
     dynamic_prompt: str,
+    emg_context: str = "",
     context_window: int | None,
     completion_reserve: int = DEFAULT_COMPLETION_RESERVE,
     matrix_rows: int | None = None,
@@ -101,6 +102,7 @@ def check(
     breakdown = {
         "system_prompt": estimate_tokens(system_prompt),
         "technical_context": estimate_tokens(technical_context),
+        "emg_context": estimate_tokens(emg_context),
         "dynamic_prompt": estimate_tokens(dynamic_prompt),
     }
     total = sum(breakdown.values())
@@ -131,7 +133,8 @@ def check(
         if largest == "dynamic_prompt":
             from app.prompts.dynamic_prompt import rows_that_fit
 
-            fixed = breakdown["system_prompt"] + breakdown["technical_context"]
+            fixed = (breakdown["system_prompt"] + breakdown["technical_context"]
+                     + breakdown["emg_context"])
             affordable = rows_that_fit(available - fixed)
             detail = f" ({matrix_rows} rows sent)" if matrix_rows else ""
             advice.append(

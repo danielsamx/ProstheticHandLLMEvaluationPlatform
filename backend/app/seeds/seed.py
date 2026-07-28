@@ -20,8 +20,14 @@ from app.models.experiment import Execution
 from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration
 from app.models.prompts import (
     DynamicPromptTemplate,
+    EmgContextVersion,
     SystemPromptVersion,
     TechnicalContextVersion,
+)
+from app.prompts.emg_context import (
+    EMG_CONTEXT_NAME,
+    EMG_CONTEXT_VERSION,
+    build_emg_context,
 )
 from app.prompts.dynamic_prompt import (
     DEFAULT_CONTENT,
@@ -360,7 +366,34 @@ async def _seed_prompts(session: AsyncSession) -> None:
             extra={"profile": profile_id.value, "version": version},
         )
 
-    # ── Block 3 ─────────────────────────────────────────────────────────────
+    # ── Block 3: EMG knowledge ──────────────────────────────────────────────
+    emg_text = build_emg_context()
+    digest = _sha(emg_text)
+    version = await _resolve_artefact_version(
+        session, EmgContextVersion, EMG_CONTEXT_NAME, EMG_CONTEXT_VERSION, digest
+    )
+    if version is not None:
+        await _deactivate_generated(session, EmgContextVersion)
+        session.add(
+            EmgContextVersion(
+                name=EMG_CONTEXT_NAME,
+                version=version,
+                content=emg_text,
+                content_sha256=digest,
+                description=(
+                    "Electrode map and interpretation guidance. Separate from the "
+                    "hardware description so it can be revised as a variable."
+                ),
+                char_count=len(emg_text),
+                is_active=True,
+                is_system_default=True,
+                generated_from_domain=True,
+            )
+        )
+        await session.flush()
+        logger.info("seeded_emg_context", extra={"version": version})
+
+    # ── Block 4 ─────────────────────────────────────────────────────────────
     # The default mode's template. The other two are selected per execution
     # rather than stored, because they are built-in renderings rather than a
     # researcher's saved artefact — filing all three would put rows in the

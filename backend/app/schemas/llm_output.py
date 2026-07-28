@@ -111,7 +111,20 @@ class ProstheticCommand(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    hand: Literal["right", "left"]
+    #: Optional, and ignored when present.
+    #:
+    #: Surface EMG is identical whichever hand the prosthesis is: the electrodes
+    #: sit on a forearm and the signal says nothing about which side the device
+    #: is fitted to. Handedness is a property of the *hardware*, chosen when the
+    #: execution is configured, and the pipeline always uses that value.
+    #:
+    #: Asking a model for a fact it has no evidence for invites a fabricated
+    #: answer — and then something has to decide what to do with it. This field
+    #: was required, the model guessed, and every guess that differed from the
+    #: configured hand raised a warning about a disagreement that could not have
+    #: been anything else. The field stays accepted so older stored responses
+    #: still parse; it no longer means anything.
+    hand: Literal["right", "left"] | None = None
     intent: Literal["gesture", "joint_positions", "stop", "no_action"]
     gesture: Literal[_GESTURE_LETTERS] | None = None  # type: ignore[valid-type]
     commands: list[CommandEntry] = Field(default_factory=list)
@@ -126,9 +139,9 @@ class ProstheticCommand(BaseModel):
     #: throw away a usable result over a documentation inconsistency.
     detected_pattern: str | None = None
 
-    @property
-    def handedness(self) -> Handedness:
-        return Handedness(self.hand)
+    def handedness(self, configured: Handedness) -> Handedness:
+        """Always the configured hand. The declared one is not consulted."""
+        return configured
 
 
 def derive_pattern(gesture: ControlCommand | None) -> str:

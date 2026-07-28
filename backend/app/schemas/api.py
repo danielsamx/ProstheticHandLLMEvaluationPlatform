@@ -185,6 +185,14 @@ class TechnicalContextOut(PromptVersionOut):
     includes_json_schema: bool
 
 
+class EmgContextIn(SystemPromptIn):
+    """Block 3 — how EMG should be interpreted."""
+
+
+class EmgContextOut(PromptVersionOut):
+    generated_from_domain: bool
+
+
 class DynamicTemplateIn(SystemPromptIn):
     include_channel_sites: bool = True
     include_extended_features: bool = True
@@ -208,9 +216,11 @@ class PromptPreviewIn(BaseModel):
     model_id: uuid.UUID | None = None
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
+    emg_context_version_id: uuid.UUID | None = None
     dynamic_prompt_template_id: uuid.UUID | None = None
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
+    emg_context_override: str | None = None
     dynamic_template_override: str | None = None
     #: What the dynamic block carries: the raw matrix, the derived descriptors,
     #: or both. An experimental variable, not a display preference.
@@ -232,6 +242,7 @@ class PromptPreviewIn(BaseModel):
 class PromptPreviewOut(BaseModel):
     system_prompt: str
     technical_context: str
+    emg_context: str
     dynamic_prompt: str
     full_prompt: str
     messages: list[dict[str, str]]
@@ -239,6 +250,7 @@ class PromptPreviewOut(BaseModel):
     char_counts: dict[str, int]
     system_prompt_sha256: str
     technical_context_sha256: str
+    emg_context_sha256: str
     dynamic_prompt_sha256: str
     frozen_context_sha256: str
     full_prompt_sha256: str
@@ -273,9 +285,11 @@ class RunExecutionIn(BaseModel):
     handedness: Handedness = Handedness.RIGHT
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
+    emg_context_version_id: uuid.UUID | None = None
     dynamic_prompt_template_id: uuid.UUID | None = None
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
+    emg_context_override: str | None = None
     dynamic_template_override: str | None = None
     #: What the dynamic block carries: the raw matrix, the derived descriptors,
     #: or both. An experimental variable, not a display preference.

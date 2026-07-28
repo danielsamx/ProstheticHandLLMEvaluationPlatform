@@ -184,18 +184,10 @@ def validate_response(
     report.stages_completed.append(ValidationStage.SCHEMA)
     report.parsed_command = command
 
-    # The hand is no longer stated in the prompt, so the model has to guess it.
-    # Recorded, never blocking: failing every response from a model that simply
-    # defaults to "right" would say more about the prompt than about the model.
-    if command.handedness is not expected_hand:
-        report.add(ValidationIssue(
-            ValidationStage.SCHEMA, "HAND_MISMATCH",
-            f"The response declares hand={command.hand!r} but the execution is "
-            f"configured for {expected_hand.value!r}. The configured hand is used.",
-            severity=Severity.WARNING,
-            field_path="hand",
-            context={"declared": command.hand, "expected": expected_hand.value},
-        ))
+    # No check on `command.hand`. Surface EMG is the same signal whichever hand
+    # the device is, so a model naming one is guessing, and a warning about that
+    # guess told the researcher nothing they could act on. The configured hand
+    # is authoritative and is what every stage below uses.
 
     if command.detected_pattern and command.detected_pattern not in DETECTED_PATTERNS:
         report.add(ValidationIssue(

@@ -14,11 +14,17 @@ import { SaveDialog, SaveDialogData } from '@shared/save-dialog';
 import { firstValueFrom } from 'rxjs';
 
 /**
- * The three prompt blocks.
+ * The four prompt blocks.
  *
- * Blocks 1 and 2 are editable and versioned; block 3 is read-only because the
- * backend assembles it. That asymmetry is the experimental design made visible:
- * the researcher controls the constants, the platform controls the variable.
+ * Blocks 1, 2 and 3 are editable and versioned; block 4 is read-only because
+ * the backend assembles it. That asymmetry is the experimental design made
+ * visible: the researcher controls the constants, the platform controls the
+ * variable.
+ *
+ * Three frozen blocks rather than one because they answer different kinds of
+ * question and are revised on different schedules — behaviour, hardware, and
+ * how to read EMG. Each can be varied while the other two stay byte-identical,
+ * which is the only way an effect can be attributed to one of them.
  */
 @Component({
   selector: 'ph-prompt-blocks',
@@ -119,10 +125,60 @@ import { firstValueFrom } from 'rxjs';
         </div>
       </mat-tab>
 
-      <!-- ── Block 3: Dynamic Prompt template ────────────────────────────── -->
+      <!-- ── Block 3: EMG knowledge context ──────────────────────────────── -->
       <mat-tab>
         <ng-template mat-tab-label>
-          <span class="text-[11px]">3 · Dynamic</span>
+          <span class="text-[11px]">3 · EMG Knowledge</span>
+          @if (store.dirtyEmgContext()) {
+            <span class="ml-1 h-1.5 w-1.5 rounded-full bg-amber"></span>
+          }
+        </ng-template>
+
+        <div class="space-y-2 pt-3">
+          <div class="flex items-center gap-2">
+            <mat-form-field appearance="outline" class="dense-field !flex-1">
+              <mat-select [ngModel]="store.selectedEmgContextId()"
+                          (ngModelChange)="selectEmgContext($event)">
+                @for (v of store.emgContexts(); track v.id) {
+                  <mat-option [value]="v.id">
+                    {{ v.name }} · v{{ v.version }}
+                    @if (v.is_active) { <span class="text-navy">&nbsp;(active)</span> }
+                  </mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+            <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                    matTooltip="Regenerate from the domain, so the electrode map matches the one the feature extractor groups by."
+                    (click)="store.regenerateEmgContextFromDomain()">
+              <mat-icon class="!h-4 !w-4 !text-[16px]">autorenew</mat-icon> Regenerate
+            </button>
+            <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
+                    [disabled]="!store.dirtyEmgContext()"
+                    (click)="saveEmgContext()">
+              <mat-icon class="!h-4 !w-4 !text-[16px]">save</mat-icon> Save
+            </button>
+          </div>
+
+          <textarea
+            class="lab-mono h-56 w-full resize-none rounded border border-ink-200 bg-ink-50 p-3 text-[11px] leading-relaxed"
+            spellcheck="false"
+            [ngModel]="store.emgContextDraft()"
+            (ngModelChange)="store.emgContextDraft.set($event)"></textarea>
+
+          <p class="text-[10px] text-ink-500">
+            How the eight channels should be read. Separate from block 2 because
+            "what can this hand do" is a fact about hardware, while "is
+            co-contraction a stop or physiological coactivation" is a
+            methodological position — and revising the second should not
+            reversion the first.
+          </p>
+        </div>
+      </mat-tab>
+
+      <!-- ── Block 4: Dynamic Prompt template ────────────────────────────── -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <span class="text-[11px]">4 · Dynamic</span>
           @if (store.dirtyTemplate()) {
             <span class="ml-1 h-1.5 w-1.5 rounded-full bg-amber"></span>
           }
@@ -221,7 +277,7 @@ import { firstValueFrom } from 'rxjs';
               the other two, and that is the whole story of whether a prompt
               fits.
             -->
-            <div class="grid grid-cols-4 gap-1.5">
+            <div class="grid grid-cols-5 gap-1.5">
               @for (row of tokenRows(preview); track row.label) {
                 <div class="flex items-center gap-1.5 rounded-md px-2 py-1.5"
                      [class]="row.tone"
@@ -275,6 +331,30 @@ export class PromptBlocks {
     if (version) this.store.systemPromptDraft.set(version.content);
   }
 
+  protected selectEmgContext(id: string): void {
+    this.store.selectedEmgContextId.set(id);
+    const version = this.store.emgContexts().find((p) => p.id === id);
+    if (version) this.store.emgContextDraft.set(version.content);
+  }
+
+  protected async saveEmgContext(): Promise<void> {
+    const result = await this.ask({
+      title: 'Save a new EMG knowledge version',
+      hint: 'Editing this changes what the model is told to conclude from the '
+          + 'same signal, so runs before and after are not comparable. '
+          + 'Regenerate restores the canonical text derived from the code.',
+      name: 'Custom EMG knowledge',
+      version: this.nextVersion(this.store.emgContexts().length),
+      summary: [
+        { label: 'Characters', value: String(this.store.emgContextDraft().length) },
+        { label: 'Becomes active', value: 'yes' },
+      ],
+    });
+    if (result) {
+      await this.store.saveEmgContextVersion(result.name, result.version ?? '1.0.0');
+    }
+  }
+
   protected selectTemplate(id: string): void {
     this.store.selectedTemplateId.set(id);
     const version = this.store.dynamicTemplates().find((p) => p.id === id);
@@ -301,13 +381,14 @@ export class PromptBlocks {
 
   /** Token accounting shown beside the preview. */
   /**
-   * The token budget as four cards, one per block plus the total.
+   * The token budget as five cards, one per block plus the total.
    *
-   * Colour carries the meaning: navy for the two frozen blocks (fixed cost,
-   * paid on every run), pink for the block that varies, and the total in amber
-   * or pink depending on whether it fits. On a real recording the dynamic block
-   * is an order of magnitude larger than the other two, and seeing that at a
-   * glance is more useful than reading four numbers and comparing them.
+   * Colour carries the meaning: deepening navy for the three frozen blocks
+   * (fixed cost, paid on every run), pink for the block that varies, and the
+   * total in amber or pink depending on whether it fits. On a real recording
+   * the dynamic block is an order of magnitude larger than the other three, and
+   * seeing that at a glance is more useful than reading five numbers and
+   * comparing them.
    */
   protected tokenRows(preview: {
     token_breakdown: Record<string, number>;
@@ -333,15 +414,24 @@ export class PromptBlocks {
         value: String(b['technical_context'] ?? 0),
         icon: 'precision_manufacturing',
         tone: 'bg-navy/10 text-navy',
-        hint: 'Block 2 — the hand: commands, ranges, protocol, safety. Identical on every run.'
+        hint: 'Block 2 — the hand: actuators, gestures, protocol, safety. Identical on every run.'
           + share(b['technical_context'] ?? 0),
+      },
+      {
+        label: 'EMG rules',
+        value: String(b['emg_context'] ?? 0),
+        icon: 'biotech',
+        tone: 'bg-navy/[0.15] text-navy',
+        hint: 'Block 3 — the electrode map and how to reason about it. Frozen, '
+          + 'and changing it changes what the model concludes from the same signal.'
+          + share(b['emg_context'] ?? 0),
       },
       {
         label: 'Dynamic',
         value: String(b['dynamic_prompt'] ?? 0),
         icon: 'monitor_heart',
         tone: 'bg-pink/10 text-pink',
-        hint: 'Block 3 — the EMG for this run. The only block that changes, and usually the largest.'
+        hint: 'Block 4 — the EMG for this run. The only block that changes, and usually the largest.'
           + share(b['dynamic_prompt'] ?? 0),
       },
       {

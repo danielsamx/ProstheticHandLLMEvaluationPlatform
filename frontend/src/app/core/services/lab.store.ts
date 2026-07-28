@@ -53,8 +53,8 @@ export class LabStore {
   readonly configurations = signal<SamplingConfiguration[]>([]);
   readonly systemPrompts = signal<PromptVersion[]>([]);
   readonly technicalContexts = signal<PromptVersion[]>([]);
+  readonly emgContexts = signal<PromptVersion[]>([]);
   readonly dynamicTemplates = signal<PromptVersion[]>([]);
-  readonly syntheticGestures = signal<string[]>([]);
   readonly lmStudio = signal<LmStudioProbe | null>(null);
 
   // ── Current selection ─────────────────────────────────────────────────────
@@ -63,6 +63,7 @@ export class LabStore {
   readonly selectedConfigurationId = signal<string | null>(null);
   readonly selectedSystemPromptId = signal<string | null>(null);
   readonly selectedContextId = signal<string | null>(null);
+  readonly selectedEmgContextId = signal<string | null>(null);
   readonly selectedTemplateId = signal<string | null>(null);
   //
   // Pinned rather than exposed. Each was a control with no decision behind it,
@@ -117,6 +118,7 @@ export class LabStore {
   // ── Prompt editing ────────────────────────────────────────────────────────
   readonly systemPromptDraft = signal<string>('');
   readonly technicalContextDraft = signal<string>('');
+  readonly emgContextDraft = signal<string>('');
   readonly dynamicTemplateDraft = signal<string>('');
   readonly promptPreview = signal<PromptPreview | null>(null);
   readonly previewLoading = signal(false);
@@ -325,14 +327,14 @@ export class LabStore {
       firstValueFrom(this.api.listConfigurations()),
       firstValueFrom(this.api.listSystemPrompts()),
       firstValueFrom(this.api.listTechnicalContexts()),
+      firstValueFrom(this.api.listEmgContexts()),
       firstValueFrom(this.api.listDynamicTemplates()),
-      firstValueFrom(this.api.syntheticGestures()),
     ]);
 
     const labels = [
       'hand specification', 'EMG format', 'providers', 'models',
       'configurations', 'system prompts', 'technical contexts',
-      'dynamic templates', 'synthetic gestures',
+      'EMG contexts', 'dynamic templates',
     ];
 
     const failed: string[] = [];
@@ -350,8 +352,8 @@ export class LabStore {
     const configs = value<SamplingConfiguration[]>(4, []);
     const systems = value<PromptVersion[]>(5, []);
     const contexts = value<PromptVersion[]>(6, []);
-    const templates = value<PromptVersion[]>(7, []);
-    const gestures = value<string[]>(8, []);
+    const emgContexts = value<PromptVersion[]>(7, []);
+    const templates = value<PromptVersion[]>(8, []);
 
     if (spec) this.handSpec.set(spec);
     if (format) this.matrixFormat.set(format);
@@ -360,8 +362,8 @@ export class LabStore {
     this.configurations.set(configs);
     this.systemPrompts.set(systems);
     this.technicalContexts.set(contexts);
+    this.emgContexts.set(emgContexts);
     this.dynamicTemplates.set(templates);
-    this.syntheticGestures.set(gestures);
 
     // Prefer the local LM Studio provider: it is the primary runtime here.
     const local = providers.find((p) => p.slug === 'lm_studio') ?? providers[0];
@@ -377,6 +379,11 @@ export class LabStore {
       this.selectedContextId.set(activeContext.id);
       this.technicalContextDraft.set(activeContext.content);
       if (activeContext.limit_profile) this.limitProfile.set(activeContext.limit_profile);
+    }
+    const activeEmg = emgContexts.find((p) => p.is_active) ?? emgContexts[0];
+    if (activeEmg) {
+      this.selectedEmgContextId.set(activeEmg.id);
+      this.emgContextDraft.set(activeEmg.content);
     }
     const activeTemplate = templates.find((p) => p.is_active) ?? templates[0];
     if (activeTemplate) {
@@ -622,6 +629,18 @@ export class LabStore {
     this.matrixError.set(null);
   }
 
+  /**
+   * Load a generated window with a known correct answer.
+   *
+   * No longer reachable from the interface. It was the first control in the
+   * source row, which made synthesised signals look like the normal way to
+   * load data — and a run against synthesised EMG is a test of this platform,
+   * not evidence about a model.
+   *
+   * Kept because that test is worth being able to run: call it from the
+   * console, or hit /emg/synthetic directly, when checking that the pipeline
+   * itself still resolves a known gesture correctly.
+   */
   async loadSynthetic(gesture: string, seed = 42): Promise<void> {
     try {
       const window = await firstValueFrom(
@@ -714,10 +733,12 @@ export class LabStore {
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
+        emg_context_version_id: this.selectedEmgContextId(),
         dynamic_prompt_template_id: this.selectedTemplateId(),
         model_id: this.selectedModelId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
+        emg_context_override: this.dirtyEmgContext() ? this.emgContextDraft() : null,
         dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
         dynamic_content: this.dynamicContent(),
         matrix_max_rows: this.matrixMaxRows(),
@@ -741,6 +762,11 @@ export class LabStore {
   dirtyContext(): boolean {
     const active = this.technicalContexts().find((p) => p.id === this.selectedContextId());
     return !!active && active.content !== this.technicalContextDraft();
+  }
+
+  dirtyEmgContext(): boolean {
+    const active = this.emgContexts().find((p) => p.id === this.selectedEmgContextId());
+    return !!active && active.content !== this.emgContextDraft();
   }
 
   dirtyTemplate(): boolean {
@@ -776,6 +802,21 @@ export class LabStore {
     this.selectedContextId.set(saved.id);
   }
 
+  async saveEmgContextVersion(name: string, version: string): Promise<void> {
+    const saved = await firstValueFrom(this.api.createEmgContext({
+      name, version, content: this.emgContextDraft(), activate: true,
+    }));
+    this.emgContexts.update(
+      (list) => [saved, ...list.map((p) => ({ ...p, is_active: false }))],
+    );
+    this.selectedEmgContextId.set(saved.id);
+  }
+
+  async regenerateEmgContextFromDomain(): Promise<void> {
+    const generated = await firstValueFrom(this.api.getGeneratedEmgContext());
+    this.emgContextDraft.set(generated.content);
+  }
+
   async regenerateContextFromDomain(): Promise<void> {
     const generated = await firstValueFrom(this.api.getGeneratedContext(this.limitProfile()));
     this.technicalContextDraft.set(generated.content);
@@ -797,9 +838,11 @@ export class LabStore {
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
+        emg_context_version_id: this.selectedEmgContextId(),
         dynamic_prompt_template_id: this.selectedTemplateId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
+        emg_context_override: this.dirtyEmgContext() ? this.emgContextDraft() : null,
         dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
         dynamic_content: this.dynamicContent(),
         matrix_max_rows: this.matrixMaxRows(),

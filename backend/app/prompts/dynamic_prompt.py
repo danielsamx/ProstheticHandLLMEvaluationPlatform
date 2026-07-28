@@ -1,4 +1,4 @@
-"""Block 3 of 3 - the Dynamic Prompt.
+"""Block 4 of 4 - the Dynamic Prompt.
 
 The ONLY block that changes between executions. What it carries is now an
 experimental variable in its own right, selected per run:
@@ -44,12 +44,18 @@ class DynamicContent(str, Enum):
     BOTH = "both"
 
 
-#: 3.0.0 - the matrix carries raw converter output, so the block no longer
-#:         claims a normalised amplitude range.
-#: 4.0.0 - the matrix and nothing else.
-#: 5.0.0 - the content is selectable (matrix / features / both) and the matrix
-#:         is sent complete rather than decimated to 32 rows.
-DYNAMIC_TEMPLATE_VERSION: Final[str] = "5.0.0"
+#: Every block starts at 1.0.
+#:
+#: The numbers used to carry the platform's own development history — a system
+#: prompt at 6.0.0 before anyone had run an experiment, because it had been
+#: rewritten six times while the code was being built. That history is in git,
+#: where it belongs; here it only made the artefact table read as though five
+#: earlier studies had happened.
+#:
+#: From here the version means what a researcher expects it to mean: 1.0 is the
+#: text this platform ships with, and anything above it is a change someone
+#: made deliberately and can be asked about.
+DYNAMIC_TEMPLATE_VERSION: Final[str] = "1.0"
 DYNAMIC_TEMPLATE_NAME: Final[str] = "Selectable EMG matrix and derived features"
 
 #: No cap. ``None`` means every row of the window is printed.

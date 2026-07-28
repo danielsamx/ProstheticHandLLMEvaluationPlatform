@@ -306,3 +306,73 @@ def test_the_logger_survives_a_reserved_key_anyway() -> None:
     # Renamed, not dropped: the value is usually the point of the line.
     assert payload["name_"] == "x"
     assert payload["module_"] == "y"
+
+
+def test_every_module_compiles_not_merely_parses() -> None:
+    """`ast.parse` is not enough, and this suite learned that the hard way.
+
+    A duplicated keyword argument — `check(emg_context=x, ..., emg_context=x)` —
+    parses cleanly and is rejected only by the compiler. So the whole suite went
+    green while `app/api/v1/prompts.py` could not be imported at all, and the
+    failure surfaced as a container restart loop instead of a test.
+
+    `compile()` runs the same checks the interpreter does at import time,
+    without executing anything or needing the optional dependencies that make
+    several of these modules unimportable in a bare environment. It closes the
+    gap between "the file is syntactically shaped like Python" and "the
+    interpreter will accept this file".
+    """
+    problems: list[str] = []
+    for path in sorted(BACKEND.rglob("*.py")):
+        if SKIP & set(path.relative_to(BACKEND).parts):
+            continue
+        try:
+            compile(path.read_text(), str(path), "exec")
+        except SyntaxError as exc:
+            problems.append(f"{path.relative_to(BACKEND)}:{exc.lineno}: {exc.msg}")
+
+    assert not problems, "Modules the interpreter would reject:\n  " + "\n  ".join(problems)
+
+
+def test_the_alembic_revisions_compile_too() -> None:
+    """Excluded from the import check above, but they run on every container
+    start — before the application does. A broken migration is a boot failure
+    with no application log to explain it."""
+    problems: list[str] = []
+    for path in sorted((BACKEND / "alembic").rglob("*.py")):
+        try:
+            compile(path.read_text(), str(path), "exec")
+        except SyntaxError as exc:
+            problems.append(f"{path.name}:{exc.lineno}: {exc.msg}")
+
+    assert not problems, "\n  ".join(problems)
+
+
+def test_the_compose_command_is_a_shell_script_that_actually_runs() -> None:
+    """Guards a boot failure that no Python test could have caught.
+
+    YAML's `>` folds newlines only between lines at the block's own indentation;
+    a *more* indented line keeps its newline. So splitting the uvicorn
+    invocation across two lines handed `sh` a fourth line beginning with
+    `--reload`, which it read as a command name — "sh: 4: --reload: not found",
+    and a container that restarted forever.
+
+    Every line but the last must therefore end in a shell continuation.
+    """
+    import yaml
+
+    compose = yaml.safe_load((BACKEND.parent / "docker-compose.yml").read_text())
+    for name, service in compose["services"].items():
+        command = service.get("command")
+        if not isinstance(command, str):
+            continue
+        lines = [line.rstrip() for line in command.strip().splitlines()]
+        dangling = [
+            f"{name} line {index}: {line.strip()!r}"
+            for index, line in enumerate(lines[:-1], 1)
+            if not line.endswith(("&&", "||", "\\", "|", ";"))
+        ]
+        assert not dangling, (
+            "Shell lines that sh will read as separate commands:\n  "
+            + "\n  ".join(dangling)
+        )

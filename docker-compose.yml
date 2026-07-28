@@ -48,11 +48,14 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    # One shell line per command, because YAML's `>` keeps the newlines of
+    # more-indented lines rather than folding them. Splitting the uvicorn
+    # invocation across two lines made `sh` read the second half as a separate
+    # command: "sh: 4: --reload: not found", and a restart loop.
     command: >
       sh -c "alembic upgrade head &&
              python -m app.seeds.seed &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000
-             --reload --reload-exclude '*.log' --timeout-graceful-shutdown 1800"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 1800"
     # --reload is what makes editing the backend pleasant, and it is also the
     # most likely cause of an inference that dies partway through: any write to
     # a mounted .py file restarts the worker and kills whatever request was in

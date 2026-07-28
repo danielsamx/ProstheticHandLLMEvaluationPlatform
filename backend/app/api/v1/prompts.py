@@ -15,15 +15,19 @@ from app.models.llm import LlmModel
 from app.models.prompts import (
     DynamicPromptTemplate,
     SystemPromptVersion,
+    EmgContextVersion,
     TechnicalContextVersion,
 )
 from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
 from app.prompts.dynamic_prompt import overriding_template
+from app.prompts.emg_context import build_emg_context
 from app.prompts.technical_context import build_technical_context
 from app.schemas.api import (
     DynamicTemplateIn,
     DynamicTemplateOut,
+    EmgContextIn,
+    EmgContextOut,
     PromptPreviewIn,
     PromptPreviewOut,
     PromptVersionOut,
@@ -190,6 +194,65 @@ async def create_dynamic_template(
     return row
 
 
+# ── Block 3: EMG knowledge context ──────────────────────────────────────────
+
+
+@router.get("/emg-context", response_model=list[EmgContextOut])
+async def list_emg_contexts(session: AsyncSession = Depends(get_session)):
+    stmt = select(EmgContextVersion).order_by(EmgContextVersion.created_at.desc())
+    return list((await session.execute(stmt)).scalars().all())
+
+
+@router.get("/emg-context/generated", response_model=dict)
+async def preview_generated_emg_context():
+    """The canonical block, regenerated from the domain.
+
+    A diff target: the electrode map here is the same one the feature extractor
+    groups by, so a hand-edited version that has drifted can be compared
+    against what it should say.
+    """
+    content = build_emg_context()
+    return {
+        "content": content,
+        "content_sha256": _sha(content),
+        "char_count": len(content),
+    }
+
+
+@router.post("/emg-context", response_model=EmgContextOut,
+             status_code=status.HTTP_201_CREATED)
+async def create_emg_context(
+    payload: EmgContextIn, session: AsyncSession = Depends(get_session)
+):
+    row = EmgContextVersion(
+        name=payload.name,
+        version=payload.version,
+        content=payload.content,
+        content_sha256=_sha(payload.content),
+        description=payload.description,
+        char_count=len(payload.content),
+        is_active=payload.activate,
+        generated_from_domain=False,
+    )
+    session.add(row)
+    await session.flush()
+    if payload.activate:
+        await _deactivate_others(session, EmgContextVersion, row.id)
+    return row
+
+
+@router.post("/emg-context/{version_id}/activate", response_model=EmgContextOut)
+async def activate_emg_context(
+    version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+):
+    row = await session.get(EmgContextVersion, version_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "EMG context version not found.")
+    row.is_active = True
+    await _deactivate_others(session, EmgContextVersion, row.id)
+    return row
+
+
 # ── Preview (no tokens spent) ───────────────────────────────────────────────
 
 
@@ -205,6 +268,7 @@ async def preview_prompt(
     context_row = await _resolve(
         session, TechnicalContextVersion, payload.technical_context_version_id
     )
+    emg_row = await _resolve(session, EmgContextVersion, payload.emg_context_version_id)
     template_row = await _resolve(
         session, DynamicPromptTemplate, payload.dynamic_prompt_template_id
     )
@@ -221,6 +285,8 @@ async def preview_prompt(
         or (system_row.content if system_row else None),
         technical_context=payload.technical_context_override
         or (context_row.content if context_row else None),
+        emg_context=payload.emg_context_override
+        or (emg_row.content if emg_row else None),
         dynamic_template=payload.dynamic_template_override
         or overriding_template(template_row),
         # These were accepted by the schema and then dropped on the floor: the
@@ -247,6 +313,7 @@ async def preview_prompt(
     budget = prompt_budget.check(
         system_prompt=assembled.system_prompt,
         technical_context=assembled.technical_context,
+        emg_context=assembled.emg_context,
         dynamic_prompt=assembled.dynamic_prompt,
         context_window=context_window,
         # What was actually rendered, not a guess. The hard-coded 64 here was a
@@ -258,6 +325,7 @@ async def preview_prompt(
     return PromptPreviewOut(
         system_prompt=assembled.system_prompt,
         technical_context=assembled.technical_context,
+        emg_context=assembled.emg_context,
         dynamic_prompt=assembled.dynamic_prompt,
         full_prompt=assembled.full_prompt,
         messages=assembled.messages,
@@ -265,6 +333,7 @@ async def preview_prompt(
         char_counts=assembled.char_counts(),
         system_prompt_sha256=assembled.system_prompt_sha256,
         technical_context_sha256=assembled.technical_context_sha256,
+        emg_context_sha256=assembled.emg_context_sha256,
         dynamic_prompt_sha256=assembled.dynamic_prompt_sha256,
         frozen_context_sha256=assembled.frozen_context_sha256,
         full_prompt_sha256=assembled.full_prompt_sha256,

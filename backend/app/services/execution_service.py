@@ -36,6 +36,7 @@ from app.models.llm import LlmModel, SamplingConfiguration
 from app.models.metrics import ExecutionMetric, SimulatorMovement
 from app.models.prompts import (
     DynamicPromptTemplate,
+    EmgContextVersion,
     SystemPromptVersion,
     TechnicalContextVersion,
 )
@@ -69,9 +70,11 @@ async def run_execution(
     handedness: Handedness = Handedness.RIGHT,
     system_prompt_version_id: uuid.UUID | None = None,
     technical_context_version_id: uuid.UUID | None = None,
+    emg_context_version_id: uuid.UUID | None = None,
     dynamic_prompt_template_id: uuid.UUID | None = None,
     system_prompt_override: str | None = None,
     technical_context_override: str | None = None,
+    emg_context_override: str | None = None,
     dynamic_template_override: str | None = None,
     dynamic_content: DynamicContent | str = DynamicContent.MATRIX,
     matrix_max_rows: int | None = None,
@@ -134,6 +137,9 @@ async def run_execution(
     context_version = await _resolve_prompt(
         session, TechnicalContextVersion, technical_context_version_id
     )
+    emg_version = await _resolve_prompt(
+        session, EmgContextVersion, emg_context_version_id
+    )
     template_version = await _resolve_prompt(
         session, DynamicPromptTemplate, dynamic_prompt_template_id
     )
@@ -158,6 +164,8 @@ async def run_execution(
         or (system_version.content if system_version else None),
         technical_context=technical_context_override
         or (context_version.content if context_version else None),
+        emg_context=emg_context_override
+        or (emg_version.content if emg_version else None),
         dynamic_template=dynamic_template_override
         or overriding_template(template_version),
         dynamic_content=dynamic_content,
@@ -185,6 +193,7 @@ async def run_execution(
         sampling_configuration_id=config.id,
         system_prompt_version_id=system_version.id if system_version else None,
         technical_context_version_id=context_version.id if context_version else None,
+        emg_context_version_id=emg_version.id if emg_version else None,
         dynamic_prompt_template_id=template_version.id if template_version else None,
         emg_window=emg_record,
         model_snapshot=_model_snapshot(model, provider, config),
@@ -219,10 +228,12 @@ async def run_execution(
         matrix_rows_sent=assembled.metadata.get("matrix_rows_sent"),
         system_prompt_text=assembled.system_prompt,
         technical_context_text=assembled.technical_context,
+        emg_context_text=assembled.emg_context,
         dynamic_prompt_text=assembled.dynamic_prompt,
         messages_json=assembled.messages,
         system_prompt_sha256=assembled.system_prompt_sha256,
         technical_context_sha256=assembled.technical_context_sha256,
+        emg_context_sha256=assembled.emg_context_sha256,
         dynamic_prompt_sha256=assembled.dynamic_prompt_sha256,
         frozen_context_sha256=assembled.frozen_context_sha256,
         full_prompt_sha256=assembled.full_prompt_sha256,
@@ -255,6 +266,7 @@ async def run_execution(
         system_prompt=assembled.system_prompt,
         technical_context=assembled.technical_context,
         dynamic_prompt=assembled.dynamic_prompt,
+        emg_context=assembled.emg_context,
         context_window=model.context_window,
         completion_reserve=config.max_tokens,
         matrix_rows=min(window.sample_count, 64),

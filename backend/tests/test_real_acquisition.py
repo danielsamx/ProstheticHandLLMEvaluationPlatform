@@ -86,6 +86,7 @@ def test_a_real_recording_needs_a_larger_context_and_the_budget_says_which(raw_m
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=8192,
         matrix_rows=window.sample_count,
     )
@@ -97,6 +98,7 @@ def test_a_real_recording_needs_a_larger_context_and_the_budget_says_which(raw_m
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=32768,
     )
     assert large.fits, large.summary()

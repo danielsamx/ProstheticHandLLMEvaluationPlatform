@@ -1,8 +1,8 @@
-import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
+import { Execution, ExecutionMetrics } from '@core/models/llm.model';
 import { LabStore } from '@core/services/lab.store';
 
 //
@@ -23,7 +23,7 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
   selector: 'ph-result-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DecimalPipe, MatIconModule, MatTooltipModule],
+  imports: [MatIconModule, MatTooltipModule],
   template: `
     @if (store.lastResult(); as execution) {
       <div class="space-y-3">
@@ -130,80 +130,36 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
           </div>
         }
 
-        <!-- Metrics -->
-        @if (execution.metrics; as metrics) {
-          <div class="grid grid-cols-4 gap-2">
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Latency</div>
-              <div class="lab-mono text-sm text-pink">
-                {{ execution.latency_ms ?? '—' }}<span class="text-[10px] text-ink-500">ms</span>
-              </div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Tokens</div>
-              <div class="lab-mono text-sm">
-                {{ execution.total_tokens ?? '—' }}
-                <span class="text-[10px] text-ink-500">
-                  ({{ execution.prompt_tokens ?? 0 }}/{{ execution.completion_tokens ?? 0 }})
-                </span>
-              </div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Cost</div>
-              <div class="lab-mono text-sm">
-                @if (execution.cost_usd > 0) {
-                  \${{ execution.cost_usd.toFixed(6) }}
-                } @else {
-                  <span class="text-navy">local</span>
-                }
-              </div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Throughput</div>
-              <div class="lab-mono text-sm">
-                {{ execution.tokens_per_second?.toFixed(1) ?? '—' }}
-                <span class="text-[10px] text-ink-500">t/s</span>
-              </div>
-            </div>
+        <!--
+          The outcome, nine cards, six to a row.
 
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Intent</div>
-              <div class="lab-mono text-xs">{{ metrics.intent ?? '—' }}</div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2">
-              <div class="lab-label">Pattern</div>
-              <div class="lab-mono text-xs">{{ metrics.detected_pattern ?? '—' }}</div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2"
-                 matTooltip="The reply was bare JSON, with no fence or prose around it. The sharpest single measure of instruction adherence.">
-              <div class="lab-label">Clean reply</div>
-              <div class="lab-mono text-xs">
-                @if (metrics.is_bare_json) { <span class="text-navy">yes</span> }
-                @else { <span class="text-amber">needed repair</span> }
+          Grouped by what they answer rather than by where the number came
+          from: the first row is whether the model was *right*, the second is
+          what it cost. Cost figures are the easy ones to read and were sitting
+          first, which put the least important row at the top.
+
+          Colour separates the two groups, so which half you are looking at is
+          answered before any number is read.
+        -->
+        @if (execution.metrics; as metrics) {
+          <div class="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-6">
+            @for (card of metricCards(execution, metrics); track card.label) {
+              <div class="flex items-center gap-1.5 rounded-md px-2 py-1.5"
+                   [class]="card.tone"
+                   [matTooltip]="card.hint">
+                <mat-icon class="!h-4 !w-4 shrink-0 !text-[16px] opacity-70">
+                  {{ card.icon }}
+                </mat-icon>
+                <div class="min-w-0 leading-none">
+                  <div class="lab-mono truncate text-[12px] font-semibold">
+                    {{ card.value }}<span class="text-[9px] font-normal opacity-70">{{ card.unit }}</span>
+                  </div>
+                  <div class="mt-0.5 truncate text-[9px] uppercase tracking-wider opacity-70">
+                    {{ card.label }}
+                  </div>
+                </div>
               </div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2"
-                 matTooltip="What the model said about itself. Never trusted — the calibration figure beside it is how far that claim was from the truth.">
-              <div class="lab-label">Confidence</div>
-              <div class="lab-mono text-xs">
-                @if (metrics.model_confidence === null) { <span class="text-ink-500">—</span> }
-                @else {
-                  <span class="text-navy">{{ metrics.model_confidence | number: '1.2-2' }}</span>
-                  @if (metrics.calibration_error !== null) {
-                    <span class="text-ink-500"> · err {{ metrics.calibration_error | number: '1.2-2' }}</span>
-                  }
-                }
-              </div>
-            </div>
-            <div class="rounded border border-ink-200 bg-ink-50 p-2"
-                 matTooltip="Scored only when the EMG window carries a ground-truth label.">
-              <div class="lab-label">Accuracy</div>
-              <div class="lab-mono text-xs">
-                @if (metrics.gesture_correct === null) { <span class="text-ink-500">unlabelled</span> }
-                @else if (metrics.gesture_correct) { <span class="text-navy">correct</span> }
-                @else { <span class="text-pink">wrong</span> }
-              </div>
-            </div>
+            }
           </div>
         }
 
@@ -240,6 +196,110 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
 export class ResultPanel {
   protected readonly store = inject(LabStore);
   protected readonly stages = STAGES;
+
+  /**
+   * The nine outcome figures, ordered by what they answer.
+   *
+   * Correctness first, cost second. The cost numbers are the easiest to read
+   * and were occupying the top row, which put the least consequential group
+   * where the eye lands first. For a device that moves a hand, "was it right"
+   * and "did it lie about being right" outrank "how many tokens".
+   *
+   * Navy for the correctness group, amber for cost, pink where a value is a
+   * finding rather than a reading — a wrong answer, or a repaired reply.
+   */
+  protected metricCards(
+    execution: Execution,
+    metrics: ExecutionMetrics,
+  ): { label: string; value: string; unit?: string; icon: string; tone: string; hint: string }[] {
+    const navy = 'bg-navy/5 text-navy';
+    const amber = 'bg-amber/15 text-navy';
+    const pink = 'bg-pink/10 text-pink';
+
+    const accuracy =
+      metrics.command_matches_expected ?? metrics.gesture_correct;
+
+    return [
+      {
+        label: 'Command',
+        value: execution.movement?.serial_command
+          ?? execution.validation_result?.normalised_serial ?? '—',
+        icon: 'terminal',
+        tone: execution.validation_passed ? navy : pink,
+        hint: 'What would be sent to the prosthesis. Empty when validation rejected the response.',
+      },
+      {
+        label: 'Accuracy',
+        value: accuracy === null || accuracy === undefined
+          ? 'unlabelled' : accuracy ? 'correct' : 'wrong',
+        icon: accuracy ? 'check_circle' : accuracy === false ? 'cancel' : 'help_outline',
+        tone: accuracy === null || accuracy === undefined ? navy : accuracy ? navy : pink,
+        hint: 'Against your expected command, or the window\'s ground-truth label. '
+            + 'Unlabelled runs were never a test of correctness.',
+      },
+      {
+        label: 'Intent',
+        value: metrics.intent ?? '—',
+        icon: 'psychology_alt',
+        tone: navy,
+        hint: 'What the model said it was doing, as distinct from what it sent.',
+      },
+      {
+        label: 'Pattern',
+        value: metrics.detected_pattern ?? '—',
+        icon: 'gesture',
+        tone: navy,
+        hint: 'The movement the model believed it saw. Used to group results.',
+      },
+      {
+        label: 'Confidence',
+        value: metrics.model_confidence === null
+          ? '—' : metrics.model_confidence.toFixed(2),
+        unit: metrics.calibration_error === null
+          ? '' : ` err ${metrics.calibration_error.toFixed(2)}`,
+        icon: 'speed',
+        tone: navy,
+        hint: 'What the model claimed about itself, and how far that claim was '
+            + 'from the truth. A model wrong at 0.9 and one wrong at 0.3 fail '
+            + 'equally on accuracy and very differently here.',
+      },
+      {
+        label: 'Clean reply',
+        value: metrics.is_bare_json ? 'yes' : 'repaired',
+        icon: metrics.is_bare_json ? 'done_all' : 'build',
+        tone: metrics.is_bare_json ? navy : pink,
+        hint: 'The reply was bare JSON, with no fence or prose around it. The '
+            + 'sharpest single measure of instruction adherence.',
+      },
+      {
+        label: 'Latency',
+        value: String(execution.latency_ms ?? '—'),
+        unit: 'ms',
+        icon: 'timer',
+        tone: amber,
+        hint: 'Wall time for the whole call. On a local model most of it is '
+            + 'prompt processing, not generation.',
+      },
+      {
+        label: 'Tokens',
+        value: String(execution.total_tokens ?? '—'),
+        unit: ` ${execution.prompt_tokens ?? 0}/${execution.completion_tokens ?? 0}`,
+        icon: 'data_usage',
+        tone: amber,
+        hint: 'Total, then prompt / completion.',
+      },
+      {
+        label: 'Throughput',
+        value: execution.tokens_per_second?.toFixed(1) ?? '—',
+        unit: ' t/s',
+        icon: 'bolt',
+        tone: amber,
+        hint: execution.cost_usd > 0
+          ? `Generation speed. Cost $${execution.cost_usd.toFixed(6)}.`
+          : 'Generation speed. Local inference, so no per-token cost.',
+      },
+    ];
+  }
 
   protected readonly issues = computed(
     () => this.store.lastResult()?.validation_result?.issues ?? [],

@@ -48,7 +48,7 @@ Interface at http://localhost:4200 · API at http://localhost:8000/docs
   - [3 · EMG input](#3--emg-input)
   - [4 · What the dynamic prompt carries](#4--what-the-dynamic-prompt-carries)
   - [5 · Expected serial command](#5--expected-serial-command)
-  - [6 · The three prompt blocks](#6--the-three-prompt-blocks)
+  - [6 · The four prompt blocks](#6--the-four-prompt-blocks)
 - [Live mode](#live-mode)
 - [Connecting the physical prosthesis](#connecting-the-physical-prosthesis)
 - [Reading the result](#reading-the-result)
@@ -62,9 +62,10 @@ Interface at http://localhost:4200 · API at http://localhost:8000/docs
 EMG window (N × 8 raw)
         │
         ▼
-  Prompt assembly ─── block 1 System  ─┐
-                      block 2 Context ─┤ frozen: identical on every run
-                      block 3 Dynamic ─┘ variable: the only thing that changes
+  Prompt assembly ─── block 1 System        ─┐
+                      block 2 Technical     ─┤ frozen: identical on every run
+                      block 3 EMG knowledge ─┘
+                      block 4 Dynamic ──────── variable: the only thing that changes
         │
         ▼
      The model ────► one JSON object
@@ -78,9 +79,15 @@ EMG window (N × 8 raw)
 ```
 
 The split between *frozen* and *variable* is the whole experimental design.
-Blocks 1 and 2 are byte-identical across runs, so when two models disagree the
-difference is attributable to the model rather than to the prompt. Block 3 is
-the stimulus.
+Blocks 1, 2 and 3 are byte-identical across runs, so when two models disagree
+the difference is attributable to the model rather than to the prompt. Block 4
+is the stimulus.
+
+There are three frozen blocks rather than one because they answer different
+kinds of question and get revised on different schedules: how to behave, what
+the hand can do, and how to read EMG. Each can be varied while the other two
+stay identical — which is the only way an effect can be attributed to one of
+them.
 
 **You never write the prompt.** The backend assembles it. You choose what goes
 into it, and you can read exactly what will be sent before spending a token.
@@ -216,17 +223,24 @@ control**. Without an answer key, nothing in the system can tell the difference.
 - Runs with no expected command are excluded from the accuracy denominator —
   "not compared" and "compared and wrong" are different facts.
 
-### 6 · The three prompt blocks
+### 6 · The four prompt blocks
 
 | Block | Contains | Editable |
 |---|---|---|
-| **1 · System** | Role and output discipline. No numbers. | Yes, versioned |
-| **2 · Technical Context** | The hand: commands, ranges, coupling, protocol, safety, EMG map, response schema. | Yes, versioned |
-| **3 · Dynamic** | The EMG for this run. | Template only — the content is assembled |
+| **1 · System** | Role and output discipline. No numbers, no EMG. | Yes, versioned |
+| **2 · Technical Context** | The hand: actuators, gestures, protocol, safety. | Yes, versioned |
+| **3 · EMG Knowledge** | The electrode map and how to reason about it. | Yes, versioned |
+| **4 · Dynamic** | The EMG for this run. | Template only — the content is assembled |
 
-Blocks 1 and 2 are **frozen**: identical bytes on every run. Editing either
-creates a new immutable version, so past results stay attributable to the exact
-wording that produced them.
+Blocks 1, 2 and 3 are **frozen**: identical bytes on every run. Editing any of
+them creates a new immutable version, so past results stay attributable to the
+exact wording that produced them.
+
+Block 3 is separate from block 2 on purpose. "What can this hand do?" is a fact
+about hardware that changes only when the hardware does; "is co-contraction a
+stop, or physiological coactivation?" is a methodological position a researcher
+will revise repeatedly. Sharing one artefact would mean every experiment on the
+second question also reversioned the first.
 
 Block 2 is **generated from the domain model**, not typed. Every number in it
 comes from the same source the validators use, so the prompt can never promise

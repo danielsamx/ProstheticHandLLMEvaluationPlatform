@@ -10,13 +10,14 @@ from app.prompts.technical_context import build_technical_context
 from app.services.emg_service import synthesise_window
 
 
-def test_prompt_has_exactly_three_blocks():
+def test_prompt_has_exactly_four_blocks():
     window = synthesise_window("power_grasp", seed=1)
     prompt = build_prompt(window)
     assert prompt.system_prompt
     assert prompt.technical_context
+    assert prompt.emg_context
     assert prompt.dynamic_prompt
-    assert prompt.full_prompt.count("=" * 78) == 2
+    assert prompt.full_prompt.count("=" * 78) == 3
 
 
 def test_frozen_context_is_identical_across_different_emg_windows():
@@ -158,22 +159,28 @@ def test_context_can_move_to_the_user_turn_for_awkward_runtimes():
     assert prompt.technical_context in prompt.messages[1]["content"]
 
 
-def test_system_prompt_demands_json_and_internal_agreement():
+def test_system_prompt_states_behaviour_and_nothing_else():
+    """Block 1 is the behaviour contract. Numbers belong to block 2 and EMG
+    reasoning to block 3, so that each can be revised without reversioning the
+    others."""
     lowered = SYSTEM_PROMPT.lower()
-    assert "valid json only" in lowered
-    assert "no prose, markdown or code fences" in lowered
-    # The clause the `consistency` stage exists to enforce.
-    assert "serial_command must match intent/gesture/commands" in lowered
+    assert "return exactly one valid json object" in lowered
+    assert "never output explanations, markdown or extra text" in lowered
+
+    # No hardware figures, no electrode names: those live in other blocks.
+    assert "600" not in SYSTEM_PROMPT
+    assert "ch1" not in lowered
+    assert "flexor" not in lowered
 
 
 def test_technical_context_is_generated_not_copied():
     """Every figure must come from the domain, so the text the model reads can
     never promise a range the validators then reject."""
     context = build_technical_context(get_limit_profile(LimitProfileId.TABLE_5_V3))
-    assert "A(pinky 0-600)" in context
-    assert "E(thumb_lower 0-130)" in context
+    assert "A Pinky      0-600" in context
+    assert "E ThumbLow   0-130" in context
     for letter in "OCPRWYLMHUGSXI":
-        assert f"{letter}=" in context
+        assert f"\n{letter} " in context
 
 
 def test_the_limit_profile_reaches_the_commands_line():
@@ -182,23 +189,29 @@ def test_the_limit_profile_reaches_the_commands_line():
     against, or a correct answer under one would be scored against the other."""
     table5 = build_technical_context(get_limit_profile(LimitProfileId.TABLE_5_V3))
     annexa = build_technical_context(get_limit_profile(LimitProfileId.ANNEX_A_V3))
-    assert "F(thumb_upper 0-400)" in table5
-    assert "F(thumb_upper 0-100)" in annexa
+    assert "F ThumbHigh  0-400" in table5
+    assert "F ThumbHigh  0-100" in annexa
 
 
-def test_the_output_contract_states_every_field_the_schema_accepts():
-    """The model is told the exact shape it will be validated against. A field
-    checked but never stated would be an unfair failure; one stated but never
-    checked would be dead text costing context on every run."""
+def test_the_response_shape_is_not_restated_in_the_prose():
+    """It reaches the model as `response_format`, where the runtime *enforces*
+    it rather than merely describing it.
+
+    A second copy in the prose could only ever agree or disagree with the
+    enforced one, and disagreeing is the dangerous outcome: the model would be
+    told one shape and constrained to another.
+    """
     context = build_technical_context()
+    for field in ("serial_command", "confidence", "within_limits", '"hand"'):
+        assert field not in context
 
-    assert "Valid JSON only. No prose." in context
-    for field in ("hand", "intent", "gesture", "commands", "serial_command",
-                  "confidence", "safety"):
-        assert f'"{field}"' in context
 
-    for letter in "OCPRWYLMHUGSXI":
-        assert f'"{letter}"' in context
+def test_the_technical_context_no_longer_carries_emg_knowledge():
+    """It moved to block 3. Leaving a copy behind would mean editing the EMG
+    guidance had to be done in two places, and the two would drift."""
+    context = build_technical_context()
+    for token in ("CH1", "Flexor", "RMS", "flexor_ratio", "co-contraction"):
+        assert token not in context
 
 
 def test_a_full_recording_overflows_a_small_context_and_says_so_usefully():
@@ -219,6 +232,7 @@ def test_a_full_recording_overflows_a_small_context_and_says_so_usefully():
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=8192,
         matrix_rows=404,
     )
@@ -241,6 +255,7 @@ def test_features_only_fits_a_small_context_comfortably():
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=8192,
     )
     assert report.fits, report.summary()
@@ -259,17 +274,24 @@ def test_a_capped_matrix_still_fits_a_small_context():
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=8192,
     )
     assert report.fits, report.summary()
 
 
-def test_technical_context_documents_the_c_ambiguity():
-    """The manual's one genuinely dangerous ambiguity: `C` alone closes the
-    whole hand, `C400` drives the middle finger. A model that reads it the
-    wrong way closes a fist when asked to extend one finger."""
+def test_the_c_ambiguity_is_visible_even_though_it_is_not_spelled_out():
+    """`C` alone closes the whole hand; `C400` drives the middle finger.
+
+    The author-supplied text no longer states this in words — it is implicit in
+    the two tables, where C appears once as an actuator and once as a gesture.
+    The pipeline still resolves it correctly, and the regression test for that
+    lives in test_validation.py. This test only pins that both readings are at
+    least present for the model to notice.
+    """
     context = build_technical_context()
-    assert "Bare C=CLOSE, C400=middle finger." in context
+    assert "C Middle" in context
+    assert "C CLOSE" in context
 
 
 # ── The mode switch has to actually switch ──────────────────────────────────
@@ -448,3 +470,66 @@ def test_no_stored_row_at_all_falls_back_to_the_mode():
     from app.prompts.dynamic_prompt import overriding_template
 
     assert overriding_template(None) is None
+
+
+# ── Four blocks, three of them frozen ───────────────────────────────────────
+
+
+def test_the_emg_block_is_frozen_and_enters_the_comparability_hash():
+    """Changing what the model is told to conclude from a signal makes two runs
+    incomparable, so the hash that claims comparability has to notice.
+
+    If `frozen_context_sha256` ignored block 3, the platform would report runs
+    under different EMG guidance as comparable while they were not — a worse
+    failure than reporting too few comparisons.
+    """
+    window = synthesise_window("rest", seed=1, samples=16)
+
+    baseline = build_prompt(window)
+    altered = build_prompt(window, emg_context="Different guidance entirely.")
+
+    assert baseline.frozen_context_sha256 != altered.frozen_context_sha256
+    assert baseline.dynamic_prompt_sha256 == altered.dynamic_prompt_sha256
+
+
+def test_each_frozen_block_can_be_varied_without_disturbing_the_others():
+    """The reason for three artefacts instead of one: an effect can only be
+    attributed to a block if the other two stayed byte-identical."""
+    window = synthesise_window("rest", seed=1, samples=16)
+    baseline = build_prompt(window)
+
+    only_emg = build_prompt(window, emg_context="Read channel one only.")
+    assert only_emg.system_prompt_sha256 == baseline.system_prompt_sha256
+    assert only_emg.technical_context_sha256 == baseline.technical_context_sha256
+    assert only_emg.emg_context_sha256 != baseline.emg_context_sha256
+
+    only_hardware = build_prompt(window, technical_context="A 0-1")
+    assert only_hardware.emg_context_sha256 == baseline.emg_context_sha256
+    assert only_hardware.technical_context_sha256 != baseline.technical_context_sha256
+
+
+def test_the_frozen_blocks_reach_the_model_in_order():
+    """Behaviour, then hardware, then how to read the signal, then the signal.
+    A model that met the EMG guidance before knowing what the hand can do would
+    be reasoning about capabilities it had not been told."""
+    window = synthesise_window("rest", seed=1, samples=8)
+    prompt = build_prompt(window)
+    text = prompt.full_prompt
+
+    assert (
+        text.index(prompt.system_prompt)
+        < text.index(prompt.technical_context)
+        < text.index(prompt.emg_context)
+        < text.index(prompt.dynamic_prompt)
+    )
+
+
+def test_the_frozen_material_stays_in_the_system_turn():
+    """All three frozen blocks in the system message, the stimulus in the user
+    turn. That is the boundary the whole design rests on."""
+    window = synthesise_window("rest", seed=1, samples=8)
+    prompt = build_prompt(window, merge_context_into_system=True)
+
+    assert len(prompt.messages) == 2
+    assert prompt.messages[0]["content"] == prompt.frozen_context
+    assert prompt.messages[1]["content"] == prompt.dynamic_prompt

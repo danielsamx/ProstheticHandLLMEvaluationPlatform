@@ -198,13 +198,29 @@ def test_confidence_outside_zero_to_one_is_rejected():
     assert report.failed_stage is ValidationStage.SCHEMA
 
 
-def test_a_declared_hand_that_differs_is_warned_not_blocked():
-    """The prompt no longer states the hand, so the model has to guess. Failing
-    every response from a model that defaults to "right" would measure the
-    prompt, not the model."""
+def test_a_declared_hand_is_ignored_entirely():
+    """Surface EMG is the same signal whichever hand the device is.
+
+    The electrodes sit on a forearm; nothing in the window says which side the
+    prosthesis is fitted to. A model naming one is guessing, so flagging the
+    guess as a disagreement reported a discrepancy that could not have been
+    anything else — noise on every run from any model that defaults to "right".
+
+    Handedness is a property of the configured hardware, and that is what every
+    stage uses.
+    """
     report = check(response("C", hand="left"), hand=Handedness.RIGHT)
     assert report.passed
-    assert any(i.code == "HAND_MISMATCH" for i in report.warnings)
+    assert not report.warnings or all(
+        issue.code != "HAND_MISMATCH" for issue in report.warnings
+    )
+
+
+def test_a_response_that_omits_the_hand_is_perfectly_valid():
+    """It is not a field the signal can support, so it is not required."""
+    payload = json.loads(response("C"))
+    del payload["hand"]
+    assert check(json.dumps(payload)).passed
 
 
 def test_an_unlisted_pattern_label_is_warned_not_blocked():
@@ -369,3 +385,17 @@ def test_a_failed_response_never_produces_a_pose():
     report = check(response("E999"))
     assert not report.passed
     assert report.resolved_pose is None
+
+
+def test_the_hand_is_never_taken_from_the_response():
+    """The configured hand drives the pose, whatever the model declared.
+
+    This is the substantive half of ignoring the field: not merely "no warning"
+    but "no influence". A left-hand pose rendered from a right-hand execution
+    would be a mirrored grasp on the simulator and on the hardware.
+    """
+    right = check(response("C", hand="left"), hand=Handedness.RIGHT)
+    assert right.resolved_pose.handedness is Handedness.RIGHT
+
+    left = check(response("C", hand="right"), hand=Handedness.LEFT)
+    assert left.resolved_pose.handedness is Handedness.LEFT

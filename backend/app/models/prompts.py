@@ -77,6 +77,33 @@ class TechnicalContextVersion(_PromptArtefact, Base):
     executions = relationship("Execution", back_populates="technical_context_version")
 
 
+class EmgContextVersion(_PromptArtefact, Base):
+    """Block 3 - how EMG should be interpreted.
+
+    Versioned apart from the technical context because it answers a different
+    kind of question. Block 2 states what the hand can do, which changes only
+    when the hardware does; this block states a methodological position — is
+    co-contraction a stop or physiological coactivation? — which a researcher
+    will revise repeatedly, and each revision is an experiment.
+
+    Sharing a table with block 2 would mean every such experiment reversioned
+    the hardware description too, and the two effects could never be attributed
+    apart.
+    """
+
+    __tablename__ = "emg_context_versions"
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_emg_context_versions_name"),
+    )
+
+    #: Marks the platform's own baseline. Hand-edited versions set it False.
+    generated_from_domain: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    executions = relationship("Execution", back_populates="emg_context_version")
+
+
 class DynamicPromptTemplate(_PromptArtefact, Base):
     """Block 3 - the per-execution EMG rendering template."""
 

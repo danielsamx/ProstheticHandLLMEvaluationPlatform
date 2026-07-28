@@ -56,7 +56,7 @@ La documentación técnica extensa también existe en inglés en
   - [3 · Entrada EMG](#3--entrada-emg)
   - [4 · Qué lleva el prompt dinámico](#4--qué-lleva-el-prompt-dinámico)
   - [5 · Comando serial esperado](#5--comando-serial-esperado)
-  - [6 · Los tres bloques del prompt](#6--los-tres-bloques-del-prompt)
+  - [6 · Los cuatro bloques del prompt](#6--los-cuatro-bloques-del-prompt)
 - [Modo Live](#modo-live)
 - [Conectar la prótesis física](#conectar-la-prótesis-física)
 - [Leer el resultado](#leer-el-resultado)
@@ -70,9 +70,10 @@ La documentación técnica extensa también existe en inglés en
 Ventana EMG (N × 8 en crudo)
         │
         ▼
-  Ensamblado del ─── bloque 1 System  ─┐
-  prompt            bloque 2 Context  ─┤ congelado: idéntico en cada ejecución
-                    bloque 3 Dynamic  ─┘ variable: lo único que cambia
+  Ensamblado ─── bloque 1 System        ─┐
+  del prompt     bloque 2 Technical     ─┤ congelado: idéntico en cada ejecución
+                 bloque 3 EMG knowledge ─┘
+                 bloque 4 Dynamic ──────── variable: lo único que cambia
         │
         ▼
      El modelo ────► un objeto JSON
@@ -86,9 +87,15 @@ Ventana EMG (N × 8 en crudo)
 ```
 
 La separación entre lo *congelado* y lo *variable* es todo el diseño
-experimental. Los bloques 1 y 2 son idénticos byte a byte entre ejecuciones, así
-que cuando dos modelos difieren, la diferencia es atribuible al modelo y no al
-prompt. El bloque 3 es el estímulo.
+experimental. Los bloques 1, 2 y 3 son idénticos byte a byte entre ejecuciones, así que cuando
+dos modelos difieren, la diferencia es atribuible al modelo y no al prompt. El
+bloque 4 es el estímulo.
+
+Hay tres bloques congelados y no uno porque responden a preguntas de distinta
+naturaleza y se revisan con distinta frecuencia: cómo comportarse, qué puede
+hacer la mano, y cómo leer el EMG. Cada uno puede variarse mientras los otros
+dos quedan idénticos, que es la única forma de atribuir un efecto a uno de
+ellos.
 
 **Usted nunca escribe el prompt.** El backend lo ensambla. Usted elige qué entra
 en él, y puede leer exactamente lo que se va a enviar antes de gastar un token.
@@ -228,17 +235,24 @@ puede distinguirlo.
 - Las ejecuciones sin comando esperado quedan fuera del denominador de
   precisión: "no comparado" y "comparado e incorrecto" son hechos distintos.
 
-### 6 · Los tres bloques del prompt
+### 6 · Los cuatro bloques del prompt
 
 | Bloque | Contiene | Editable |
 |---|---|---|
-| **1 · System** | Rol y disciplina de salida. Sin números. | Sí, versionado |
-| **2 · Technical Context** | La mano: comandos, rangos, acoplamiento, protocolo, seguridad, mapa EMG, esquema de respuesta. | Sí, versionado |
-| **3 · Dynamic** | El EMG de esta ejecución. | Solo la plantilla — el contenido se ensambla |
+| **1 · System** | Rol y disciplina de salida. Sin números, sin EMG. | Sí, versionado |
+| **2 · Technical Context** | La mano: actuadores, gestos, protocolo, seguridad. | Sí, versionado |
+| **3 · EMG Knowledge** | El mapa de electrodos y cómo razonar sobre él. | Sí, versionado |
+| **4 · Dynamic** | El EMG de esta ejecución. | Solo la plantilla — el contenido se ensambla |
 
-Los bloques 1 y 2 están **congelados**: los mismos bytes en cada ejecución.
+Los bloques 1, 2 y 3 están **congelados**: los mismos bytes en cada ejecución.
 Editar cualquiera crea una versión nueva e inmutable, de modo que los resultados
 pasados siguen siendo atribuibles a la redacción exacta que los produjo.
+
+El bloque 3 está separado del 2 a propósito. "¿Qué puede hacer esta mano?" es un
+hecho del hardware que solo cambia cuando cambia el hardware; "¿la co-contracción
+es un STOP o es coactivación fisiológica?" es una posición metodológica que un
+investigador revisará muchas veces. Compartir un solo artefacto obligaría a que
+cada experimento sobre la segunda pregunta reversionara también la primera.
 
 El bloque 2 se **genera desde el modelo de dominio**, no se escribe a mano. Cada
 número sale de la misma fuente que usan los validadores, así que el prompt nunca

@@ -77,6 +77,7 @@ def _report(samples: int = 404, context_window: int | None = 8192):
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=context_window,
         matrix_rows=prompt.metadata["matrix_rows_sent"],
     )
@@ -110,6 +111,7 @@ def test_a_large_completion_reserve_is_called_out():
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=7000,
         completion_reserve=6144,
     )
@@ -134,10 +136,15 @@ def test_an_unknown_context_window_is_not_reported_as_a_failure():
     assert report.advice == []
 
 
-def test_the_breakdown_covers_all_three_blocks():
+def test_the_breakdown_covers_all_four_blocks():
+    """A block missing from the breakdown is a block whose cost is invisible,
+    and the EMG context is frozen — paid on every single run."""
     _, report = _report()
-    assert set(report.breakdown) == {"system_prompt", "technical_context", "dynamic_prompt"}
+    assert set(report.breakdown) == {
+        "system_prompt", "technical_context", "emg_context", "dynamic_prompt",
+    }
     assert report.prompt_tokens == sum(report.breakdown.values())
+    assert report.breakdown["emg_context"] > 0
 
 
 def test_completion_reserve_is_deducted():
@@ -146,6 +153,7 @@ def test_completion_reserve_is_deducted():
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
+        emg_context=prompt.emg_context,
         context_window=8192,
     )
     assert check(**kwargs, completion_reserve=128).fits

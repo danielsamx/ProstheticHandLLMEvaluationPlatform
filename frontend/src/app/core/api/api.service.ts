@@ -34,9 +34,11 @@ export interface RunExecutionPayload {
   handedness: Handedness;
   system_prompt_version_id?: string | null;
   technical_context_version_id?: string | null;
+  emg_context_version_id?: string | null;
   dynamic_prompt_template_id?: string | null;
   system_prompt_override?: string | null;
   technical_context_override?: string | null;
+  emg_context_override?: string | null;
   dynamic_template_override?: string | null;
   /** What the dynamic block carries. An experimental variable, not a view. */
   dynamic_content?: DynamicContent;
@@ -160,6 +162,24 @@ export class ApiService {
     return this.http.get<{
       limit_profile: string; content: string; content_sha256: string; char_count: number;
     }>(`${this.base}/prompts/technical-context/generated`, { params });
+  }
+
+  listEmgContexts(): Observable<PromptVersion[]> {
+    return this.http.get<PromptVersion[]>(`${this.base}/prompts/emg-context`);
+  }
+
+  getGeneratedEmgContext(): Observable<{
+    content: string; content_sha256: string; char_count: number;
+  }> {
+    return this.http.get<{
+      content: string; content_sha256: string; char_count: number;
+    }>(`${this.base}/prompts/emg-context/generated`);
+  }
+
+  createEmgContext(body: {
+    name: string; version: string; content: string; description?: string; activate: boolean;
+  }): Observable<PromptVersion> {
+    return this.http.post<PromptVersion>(`${this.base}/prompts/emg-context`, body);
   }
 
   listDynamicTemplates(): Observable<PromptVersion[]> {
