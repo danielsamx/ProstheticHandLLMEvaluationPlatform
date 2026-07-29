@@ -169,6 +169,20 @@ async def call_llm(
         "messages": messages,
         "timeout": timeout_s or settings.llm_request_timeout_s,
         "num_retries": settings.llm_max_retries if num_retries is None else num_retries,
+        # Two different retry knobs, and setting only one leaves the other at
+        # its default.
+        #
+        # `num_retries` is LiteLLM's own loop. `max_retries` belongs to the
+        # OpenAI client underneath it and defaults to 2. So a request with
+        # num_retries=0 still ran three times, and a 120 s deadline produced a
+        # failure at 242 s — the log said "did not answer within 120s after
+        # 242.6s" and the arithmetic was the clue: 242.6 is two deadlines.
+        #
+        # Retrying a timeout is the worst case for it. The retry restarts prompt
+        # processing from scratch, so it cannot succeed faster than the attempt
+        # that just failed, and it doubles the wait before the researcher is
+        # told anything.
+        "max_retries": 0,
         **sampling,
     }
 
@@ -330,8 +344,12 @@ def _wrap(
             error_type="Timeout",
             retryable=True,
             hint=(
-                f"The runtime did not answer within {timeout_s or settings.llm_request_timeout_s:.0f}s"
-                f"{waited}. On a local model this is usually prompt processing "
+                f"The runtime did not answer within "
+                f"{timeout_s or settings.llm_request_timeout_s:.0f}s{waited}. "
+                "That deadline comes from LLM_REQUEST_TIMEOUT_S, which Compose "
+                "reads from .env — so the value there overrides the application "
+                "default, in both directions. "
+                "On a local model this is usually prompt processing "
                 "rather than a fault: a small model on CPU can spend minutes "
                 "before emitting its first token. Check LM Studio's log for "
                 "'Prompt processing progress' — if it is advancing, the model is "

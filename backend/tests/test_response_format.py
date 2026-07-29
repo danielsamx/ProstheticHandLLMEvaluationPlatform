@@ -212,3 +212,43 @@ def test_the_wrapper_records_how_long_it_waited():
     assert "elapsed_s=time.perf_counter() - started" in source
     assert 'waited = "" if elapsed_s is None else f" after {elapsed_s:.1f}s"' in source
     assert 'error_type="ConnectionLost"' in source
+
+
+def test_both_retry_knobs_are_pinned_to_zero():
+    """A timeout that fires at twice its own deadline is a retry nobody asked for.
+
+    `num_retries` is LiteLLM's loop; `max_retries` belongs to the OpenAI client
+    underneath and defaults to 2. Setting only the first left the second at its
+    default, so a 120 s deadline produced a failure at 242.6 s — and the error
+    message read "did not answer within 120s after 242.6s", which is the sort of
+    contradiction that sends someone looking in the wrong place.
+
+    Retrying a timeout is its worst case: the retry restarts prompt processing
+    from scratch, so it cannot succeed faster than the attempt that just failed,
+    and it doubles the wait before anyone is told anything.
+    """
+    source = (BACKEND / "app" / "services" / "llm_service.py").read_text()
+    assert '"max_retries": 0,' in source
+    assert '"num_retries": settings.llm_max_retries' in source
+
+
+def test_the_shipped_timeout_is_a_ceiling_not_a_hosted_api_figure():
+    """The value in .env wins over the application default, in both directions.
+
+    Compose reads .env for `${VAR}` interpolation *and* passes it into the
+    container, so a stale 120 there silently beat the 1800 in config.py. The
+    example file is what a fresh install copies, so it is the one that has to be
+    right.
+    """
+    import re
+
+    for name in (".env.example", ".env"):
+        path = BACKEND.parent / name
+        if not path.exists():
+            continue
+        match = re.search(r"^LLM_REQUEST_TIMEOUT_S=(\d+)", path.read_text(), re.M)
+        assert match, f"{name} does not set LLM_REQUEST_TIMEOUT_S"
+        assert int(match.group(1)) >= 900, (
+            f"{name} sets a {match.group(1)}s deadline; local CPU inference "
+            "regularly needs longer than that for prompt processing alone."
+        )

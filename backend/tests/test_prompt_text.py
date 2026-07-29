@@ -101,7 +101,11 @@ Normal grasping may activate both flexors and extensors because of physiological
 Simultaneous agonist and antagonist activity alone does not indicate STOP.
 Infer the movement whose overall pattern is most consistent with the observed EMG.
 If evidence is insufficient return no_action.
-Return STOP only when intentional co-contraction is the most probable interpretation.
+Return STOP only when ALL of the following are true:
+1. Flexor and extensor activation are both high.
+2. Their activation is approximately balanced across most channels.
+3. No grasp, pinch, point, thumbs-up, call-me, OK or other supported gesture better explains the pattern.
+4. The overall EMG is more consistent with intentional simultaneous contraction than with any hand movement.
 """
 
 
@@ -150,11 +154,21 @@ def test_the_emg_block_contradicts_the_naive_co_contraction_rule():
     antagonists to stabilise the wrist — so the rule turned ordinary grasping
     into an emergency halt. A model given the simple rule will follow it, so the
     correction has to be explicit rather than merely omitted.
+
+    STOP now needs four conditions met together, and the third is the one doing
+    the real work: it forces the model to rule out every supported gesture
+    before halting. Balanced activity is a *necessary* sign of intentional
+    co-contraction, never a sufficient one.
     """
     text = build_emg_context()
     assert "Simultaneous agonist and antagonist activity alone does not indicate STOP." in text
     assert "physiological coactivation" in text
     assert "Do not classify movements from a single threshold." in text
+
+    assert "Return STOP only when ALL of the following are true:" in text
+    assert "better explains the pattern" in text
+    for condition in ("1.", "2.", "3.", "4."):
+        assert f"\n{condition} " in text
 
 
 def test_the_blocks_carry_the_versions_this_text_was_filed_under():
