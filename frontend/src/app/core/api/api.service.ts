@@ -12,6 +12,7 @@ import {
   LabPreset,
   LlmModel,
   LmStudioProbe,
+  PromptConfiguration,
   PromptPreview,
   PromptVersion,
   Provider,
@@ -244,6 +245,10 @@ export class ApiService {
     return this.http.post(`${this.base}/export/executions.csv`, body, {
       responseType: 'blob',
     });
+  }
+
+  listPromptConfigurations(): Observable<PromptConfiguration[]> {
+    return this.http.get<PromptConfiguration[]>(`${this.base}/executions/configurations`);
   }
 
   listExecutions(limit = 50): Observable<Execution[]> {

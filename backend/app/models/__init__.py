@@ -14,6 +14,7 @@ from app.models.experiment import Execution, Experiment  # noqa: F401
 from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration  # noqa: F401
 from app.models.metrics import ExecutionMetric, SimulatorMovement  # noqa: F401
 from app.models.project import Project, ProjectStatus  # noqa: F401
+from app.models.prompt_configuration import PromptConfiguration  # noqa: F401
 from app.models.prompts import (  # noqa: F401
     DynamicPromptTemplate,
     EmgContextVersion,

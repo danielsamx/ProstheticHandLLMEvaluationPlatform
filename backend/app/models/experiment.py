@@ -116,6 +116,16 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     emg_context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("emg_context_versions.id", ondelete="SET NULL")
     )
+    #: The distinct combination of the three frozen blocks this run used.
+    #:
+    #: Deduplicated: three runs under two distinct setups produce two rows, and
+    #: returning to an earlier setup reuses its row. This is what turns "which
+    #: configuration gave me that result?" from a three-way join into a lookup.
+    prompt_configuration_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("prompt_configurations.id", ondelete="SET NULL"),
+        index=True,
+    )
     dynamic_prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("dynamic_prompt_templates.id", ondelete="SET NULL")
     )
@@ -237,6 +247,19 @@ class Execution(UUIDMixin, TimestampMixin, Base):
     system_prompt_version = relationship("SystemPromptVersion", back_populates="executions")
     technical_context_version = relationship("TechnicalContextVersion", back_populates="executions")
     emg_context_version = relationship("EmgContextVersion", back_populates="executions")
+    prompt_configuration = relationship(
+        "PromptConfiguration", back_populates="executions", lazy="joined",
+    )
+
+    @property
+    def prompt_configuration_label(self) -> str | None:
+        """The configuration's readable name, flattened onto the execution.
+
+        Exposed here rather than as a nested object because every consumer
+        wants the label beside the result, not a second object to unpack. The
+        relationship is eager-loaded, so this costs nothing extra.
+        """
+        return self.prompt_configuration.label if self.prompt_configuration else None
     dynamic_prompt_template = relationship("DynamicPromptTemplate", back_populates="executions")
     validation_result = relationship(
         "ValidationResult", back_populates="execution",

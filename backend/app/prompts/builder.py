@@ -46,9 +46,14 @@ from app.prompts.system_prompt import default_system_prompt
 from app.prompts.technical_context import build_technical_context
 from app.schemas.emg import EmgWindow
 
-#: Separator between the frozen context and the per-run payload.  Kept explicit
-#: so models that flatten messages still see a hard boundary.
-BLOCK_SEPARATOR = "\n\n" + "=" * 78 + "\n\n"
+#: Separator between blocks.
+#:
+#: A blank line. It used to be a rule of 78 equals signs, on the theory that a
+#: model flattening the messages needed a hard visual boundary. It did not: each
+#: block already opens with its own heading, so the rule marked a division the
+#: text states anyway — while costing about 30 tokens per prompt and turning the
+#: full-prompt view into something you have to read around.
+BLOCK_SEPARATOR = "\n\n"
 
 
 def sha256(text: str) -> str:

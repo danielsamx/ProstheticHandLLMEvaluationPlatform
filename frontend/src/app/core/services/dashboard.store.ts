@@ -2,7 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 
 import { ApiService } from '../api/api.service';
-import { Execution, ExecutionStats } from '../models/llm.model';
+import { Execution, ExecutionStats, PromptConfiguration } from '../models/llm.model';
 
 /**
  * State for the reading surface.
@@ -21,6 +21,14 @@ export class DashboardStore {
 
   readonly stats = signal<ExecutionStats | null>(null);
   readonly executions = signal<Execution[]>([]);
+
+  /**
+   * The distinct prompt setups, newest first.
+   *
+   * Deduplicated by the backend at write time, so this is already the answer
+   * to "how many different setups have I tried" — no grouping happens here.
+   */
+  readonly configurations = signal<PromptConfiguration[]>([]);
 
   /** Days back; 0 means all time. */
   readonly window = signal(0);
@@ -61,12 +69,14 @@ export class DashboardStore {
     this.loading.set(true);
     this.error.set(null);
     try {
-      const [stats, executions] = await Promise.all([
+      const [stats, executions, configurations] = await Promise.all([
         firstValueFrom(this.api.executionStats(this.since())),
         firstValueFrom(this.api.listExecutions(500)),
+        firstValueFrom(this.api.listPromptConfigurations()),
       ]);
       this.stats.set(stats);
       this.executions.set(executions);
+      this.configurations.set(configurations);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

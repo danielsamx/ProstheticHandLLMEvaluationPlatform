@@ -14,11 +14,14 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.models.experiment import Execution
 from app.models.metrics import ExecutionMetric
+from app.models.prompt_configuration import PromptConfiguration
 from app.models.validation import ValidationIssueRecord, ValidationResult
 from app.schemas.api import (
     ExecutionOut,
+    ConfigurationModelResult,
     ExecutionStats,
     ModelSummary,
+    PromptConfigurationOut,
     RunExecutionIn,
     RunExecutionOut,
 )
@@ -236,6 +239,104 @@ async def execution_stats(
         ],
         top_failure_codes=[{"code": code, "count": count} for code, count in failures],
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Prompt configurations
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/configurations", response_model=list[PromptConfigurationOut])
+async def list_prompt_configurations(
+    since: datetime | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Every distinct frozen prompt setup, with what each model did under it.
+
+    Deduplicated at write time, so this is a plain list rather than a grouping:
+    three runs under two setups produce two rows, and going back to the first
+    setup reuses its row instead of adding a third.
+
+    Results are broken out **per model** because a configuration is only
+    comparable within one. Averaging a 4B model and a 30B model under the same
+    prompt yields a number that describes neither, and presenting the
+    configuration as though it had a single accuracy would invite exactly that
+    reading.
+    """
+    filters = [Execution.prompt_configuration_id.is_not(None)]
+    if since:
+        filters.append(Execution.created_at >= since)
+
+    configurations = (
+        await session.execute(
+            select(PromptConfiguration).order_by(desc(PromptConfiguration.last_used_at))
+        )
+    ).scalars().all()
+
+    # One grouped query for every configuration at once. Per-configuration
+    # queries would be N+1, and this list is displayed in full.
+    rows = (
+        await session.execute(
+            select(
+                Execution.prompt_configuration_id,
+                Execution.litellm_model,
+                func.count(Execution.id),
+                func.count(Execution.id).filter(Execution.validation_passed.is_(True)),
+                func.count(ExecutionMetric.id).filter(
+                    ExecutionMetric.command_matches_expected.is_not(None)
+                ),
+                func.count(ExecutionMetric.id).filter(
+                    ExecutionMetric.command_matches_expected.is_(True)
+                ),
+                func.avg(Execution.latency_ms),
+                func.max(Execution.created_at),
+            )
+            .outerjoin(ExecutionMetric, ExecutionMetric.execution_id == Execution.id)
+            .where(*filters, Execution.litellm_model.is_not(None))
+            .group_by(Execution.prompt_configuration_id, Execution.litellm_model)
+            .order_by(func.count(Execution.id).desc())
+        )
+    ).all()
+
+    per_configuration: dict[uuid.UUID, list[ConfigurationModelResult]] = {}
+    for row in rows:
+        per_configuration.setdefault(row[0], []).append(
+            ConfigurationModelResult(
+                litellm_model=row[1],
+                executions=row[2],
+                passed=row[3],
+                pass_rate=round(row[3] / row[2], 4) if row[2] else 0.0,
+                command_labelled=row[4] or 0,
+                command_matched=row[5] or 0,
+                # Unlabelled runs stay out of the denominator: they were never a
+                # test of correctness, and letting them dilute the rate would
+                # make it fall every time an unlabelled window was run.
+                command_accuracy=(
+                    round((row[5] or 0) / row[4], 4) if row[4] else None
+                ),
+                mean_latency_ms=round(float(row[6]), 1) if row[6] is not None else None,
+                last_run_at=row[7],
+            )
+        )
+
+    return [
+        PromptConfigurationOut(
+            id=configuration.id,
+            label=configuration.label,
+            frozen_context_sha256=configuration.frozen_context_sha256,
+            system_prompt_version=configuration.system_prompt_version,
+            technical_context_version=configuration.technical_context_version,
+            emg_context_version=configuration.emg_context_version,
+            first_used_at=configuration.first_used_at,
+            last_used_at=configuration.last_used_at,
+            executions=sum(
+                result.executions
+                for result in per_configuration.get(configuration.id, [])
+            ),
+            by_model=per_configuration.get(configuration.id, []),
+        )
+        for configuration in configurations
+    ]
 
 
 @router.get("", response_model=list[ExecutionOut])

@@ -186,6 +186,9 @@ export interface Execution {
   /** Which rendering of the EMG the model saw, and how much of it. */
   dynamic_content: DynamicContent | null;
   matrix_rows_sent: number | null;
+  /** The distinct frozen prompt setup that produced this result. */
+  prompt_configuration_id: string | null;
+  prompt_configuration_label: string | null;
   frozen_context_sha256: string | null;
   full_prompt_sha256: string | null;
   created_at: string;
@@ -254,6 +257,39 @@ export interface ExecutionStats {
   command_labelled: number;
   command_matched: number;
   command_accuracy: number | null;
+}
+
+/** One model's record under one prompt configuration. */
+export interface ConfigurationModelResult {
+  litellm_model: string;
+  executions: number;
+  passed: number;
+  pass_rate: number;
+  command_labelled: number;
+  command_matched: number;
+  command_accuracy: number | null;
+  mean_latency_ms: number | null;
+  last_run_at: string | null;
+}
+
+/**
+ * A distinct combination of the three frozen prompt blocks.
+ *
+ * Deduplicated at write time: three runs under two setups leave two rows, and
+ * returning to an earlier setup reuses its row.
+ */
+export interface PromptConfiguration {
+  id: string;
+  label: string;
+  frozen_context_sha256: string;
+  system_prompt_version: string | null;
+  technical_context_version: string | null;
+  emg_context_version: string | null;
+  first_used_at: string;
+  last_used_at: string;
+  executions: number;
+  /** Per model, because a configuration is only comparable within one. */
+  by_model: ConfigurationModelResult[];
 }
 
 export interface LabPreset {

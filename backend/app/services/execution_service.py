@@ -48,6 +48,7 @@ from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
+from app.services import prompt_configuration_service
 from app.services.metrics_service import compute_metrics
 from app.domain.protocol import normalise_expected_command
 from app.prompts.dynamic_prompt import DynamicContent, overriding_template
@@ -178,6 +179,18 @@ async def run_execution(
         merge_context_into_system=merge_context_into_system,
     )
 
+    # The configuration this run belongs to: get-or-create, keyed on the frozen
+    # digest. Resolved before the Execution is built so the row can carry the
+    # foreign key from the start rather than being updated afterwards.
+    configuration = await prompt_configuration_service.resolve(
+        session,
+        frozen_context_sha256=assembled.frozen_context_sha256,
+        frozen_context_text=assembled.frozen_context,
+        system_version=system_version,
+        technical_version=context_version,
+        emg_version=emg_version,
+    )
+
     resolved_project_id = project_id
     if resolved_project_id is None and experiment_id is not None:
         experiment = await session.get(Experiment, experiment_id)
@@ -194,6 +207,7 @@ async def run_execution(
         system_prompt_version_id=system_version.id if system_version else None,
         technical_context_version_id=context_version.id if context_version else None,
         emg_context_version_id=emg_version.id if emg_version else None,
+        prompt_configuration_id=configuration.id,
         dynamic_prompt_template_id=template_version.id if template_version else None,
         emg_window=emg_record,
         model_snapshot=_model_snapshot(model, provider, config),

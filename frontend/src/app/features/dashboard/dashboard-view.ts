@@ -166,6 +166,78 @@ import { LabStore } from '@core/services/lab.store';
             </table>
           </div>
 
+          <!--
+            ── Prompt configurations ──────────────────────────────────────
+
+            The answer to "which setup produced that result?".
+
+            Deduplicated by the backend on the frozen-context digest, so this
+            is a list rather than a grouping: run the same three blocks a
+            hundred times and there is one row; go back to an earlier setup and
+            it reuses the row it made the first time.
+
+            Broken out per model on purpose. A configuration is only comparable
+            within one model — averaging a 4B and a 30B under the same prompt
+            gives a number that describes neither — so there is deliberately no
+            single accuracy figure for a configuration as a whole.
+          -->
+          @if (store.configurations().length) {
+            <div class="lab-card overflow-hidden">
+              <div class="flex items-baseline justify-between border-b border-ink-200 px-4 py-2.5">
+                <span class="text-sm font-semibold text-navy">Prompt configurations</span>
+                <span class="text-[11px] text-ink-500">
+                  {{ store.configurations().length }} distinct setup(s) ·
+                  system, technical and EMG versions
+                </span>
+              </div>
+
+              <div class="divide-y divide-ink-100">
+                @for (configuration of store.configurations(); track configuration.id) {
+                  <div class="px-4 py-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="lab-chip bg-navy text-white lab-mono">
+                        {{ configuration.label }}
+                      </span>
+                      <span class="text-[11px] text-ink-500">
+                        {{ configuration.executions }} run(s) ·
+                        last used {{ configuration.last_used_at | date: 'dd MMM HH:mm' }}
+                      </span>
+                    </div>
+
+                    @if (configuration.by_model.length) {
+                      <div class="mt-2 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                        @for (row of configuration.by_model; track row.litellm_model) {
+                          <div class="flex items-center gap-2 rounded-md bg-ink-50 px-2 py-1.5 text-[11px]">
+                            <mat-icon class="!h-4 !w-4 shrink-0 !text-[16px] text-ink-400">
+                              memory
+                            </mat-icon>
+                            <div class="min-w-0 flex-1">
+                              <div class="lab-mono truncate text-navy">{{ row.litellm_model }}</div>
+                              <div class="text-[10px] text-ink-500">
+                                {{ row.executions }} run(s) ·
+                                {{ (row.pass_rate * 100).toFixed(0) }}% valid
+                                @if (row.command_accuracy !== null) {
+                                  · {{ (row.command_accuracy * 100).toFixed(0) }}% correct
+                                  ({{ row.command_matched }}/{{ row.command_labelled }})
+                                } @else {
+                                  · unlabelled
+                                }
+                              </div>
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    } @else {
+                      <div class="mt-1 text-[11px] text-ink-500">
+                        No completed runs under this configuration yet.
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
           <!-- ── How they fail ─────────────────────────────────────────── -->
           @if (stats.top_failure_codes.length) {
             <div class="lab-card p-4">
@@ -220,6 +292,7 @@ import { LabStore } from '@core/services/lab.store';
                   <th class="px-3 py-2 text-left font-semibold">Expected</th>
                   <th class="px-3 py-2 text-left font-semibold">Got</th>
                   <th class="px-3 py-2 text-center font-semibold">Match</th>
+                  <th class="px-3 py-2 text-left font-semibold">Config</th>
                   <th class="px-3 py-2 text-left font-semibold">Input</th>
                   <th class="px-3 py-2 text-left font-semibold">Pattern</th>
                   <th class="px-3 py-2 text-center font-semibold">Clean</th>
@@ -273,6 +346,12 @@ import { LabStore } from '@core/services/lab.store';
                               matTooltip="No expected command was given for this run">–</span>
                       }
                     </td>
+                    <td class="px-3 py-1.5">
+                      <span class="lab-chip lab-mono bg-navy/5 text-navy"
+                            matTooltip="The frozen prompt setup: system · technical · EMG versions. Rows sharing it saw byte-identical constants.">
+                        {{ execution.prompt_configuration_label ?? '—' }}
+                      </span>
+                    </td>
                     <!--
                       What the model was actually shown. A matrix run and a
                       features run are different experiments, and averaging them
@@ -317,7 +396,7 @@ import { LabStore } from '@core/services/lab.store';
                     </td>
                   </tr>
                 } @empty {
-                  <tr><td colspan="13" class="px-4 py-8 text-center text-ink-500">
+                  <tr><td colspan="14" class="px-4 py-8 text-center text-ink-500">
                     @if (store.loading()) {
                       Loading…
                     } @else if (store.error()) {

@@ -428,6 +428,9 @@ class ExecutionOut(BaseModel):
     expected_serial_command: str | None = None
     dynamic_content: str | None = None
     matrix_rows_sent: int | None = None
+    #: Which distinct frozen prompt setup produced this result.
+    prompt_configuration_id: uuid.UUID | None = None
+    prompt_configuration_label: str | None = None
     frozen_context_sha256: str | None = None
     full_prompt_sha256: str | None = None
     created_at: datetime
@@ -459,6 +462,40 @@ class ModelSummary(BaseModel):
     total_tokens: int
     total_cost_usd: float
     last_run_at: datetime | None = None
+
+
+class ConfigurationModelResult(BaseModel):
+    """One model's record under one configuration."""
+
+    litellm_model: str
+    executions: int
+    passed: int
+    pass_rate: float
+    command_labelled: int = 0
+    command_matched: int = 0
+    command_accuracy: float | None = None
+    mean_latency_ms: float | None = None
+    last_run_at: datetime | None = None
+
+
+class PromptConfigurationOut(BaseModel):
+    """A distinct frozen prompt setup, and what each model did under it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    label: str
+    frozen_context_sha256: str
+    system_prompt_version: str | None = None
+    technical_context_version: str | None = None
+    emg_context_version: str | None = None
+    first_used_at: datetime
+    last_used_at: datetime
+    executions: int = 0
+    #: Broken out per model, because a configuration is only comparable within
+    #: one. Averaging a 4B model and a 30B model under the same prompt produces
+    #: a number that describes neither.
+    by_model: list[ConfigurationModelResult] = Field(default_factory=list)
 
 
 class ExecutionStats(BaseModel):

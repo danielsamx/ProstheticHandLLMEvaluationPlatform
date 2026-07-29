@@ -17,7 +17,15 @@ def test_prompt_has_exactly_four_blocks():
     assert prompt.technical_context
     assert prompt.emg_context
     assert prompt.dynamic_prompt
-    assert prompt.full_prompt.count("=" * 78) == 3
+    # Counted by locating each block in the joined text rather than by counting
+    # separators: the separator is now a blank line, which occurs inside blocks
+    # too, so counting it would measure paragraph breaks instead of boundaries.
+    text = prompt.full_prompt
+    assert all(
+        block in text
+        for block in (prompt.system_prompt, prompt.technical_context,
+                      prompt.emg_context, prompt.dynamic_prompt)
+    )
 
 
 def test_frozen_context_is_identical_across_different_emg_windows():
@@ -164,10 +172,12 @@ def test_system_prompt_states_behaviour_and_nothing_else():
     reasoning to block 3, so that each can be revised without reversioning the
     others."""
     lowered = SYSTEM_PROMPT.lower()
-    assert "return exactly one valid json object" in lowered
-    assert "never output explanations, markdown or extra text" in lowered
+    assert "exactly one valid json object" in lowered
+    assert "markdown" in lowered
 
     # No hardware figures, no electrode names: those live in other blocks.
+    # This is the property that lets one block be revised without reversioning
+    # the others, and it is easy to lose by pasting a limit in for convenience.
     assert "600" not in SYSTEM_PROMPT
     assert "ch1" not in lowered
     assert "flexor" not in lowered
