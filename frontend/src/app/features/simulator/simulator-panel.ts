@@ -188,50 +188,49 @@ import { CameraView, HandScene } from './hand-scene';
       <!-- ── Actuator read-out ──────────────────────────────────────────── -->
       <div class="absolute bottom-4 left-4 right-4">
         <div class="lab-card p-3">
-          <div class="mb-2 flex items-center justify-between">
-            <span class="lab-label">Actuator state</span>
-            @if (movement(); as frame) {
-              <div class="flex items-center gap-2">
-                <span class="lab-mono rounded bg-navy px-2 py-0.5 text-[11px] text-white">
-                  {{ frame.serial_command ?? '—' }}
-                </span>
-                <span class="lab-mono text-[10px] text-ink-500">
-                  {{ frame.source }} · {{ frame.duration_ms }}ms
-                </span>
-              </div>
-            }
-          </div>
-
           <!--
-            ── Manual command ──────────────────────────────────────────────
+            ── One row: title, test field, outcome, last frame ──────────────
 
-            Inside this card rather than floating above it. Two absolutely
-            positioned boxes both pinned to bottom-4 stack, and the later one in
-            the DOM wins — which is why this input was invisible: the actuator
-            read-out was painting straight over it.
+            The title, the input and the read-out chip were three stacked rows
+            saying one thing between them: what command the hand is holding, and
+            what you can send it next. Reading is left to right — what this is,
+            what you type, what happened, what the hand last received — so the
+            row needs no headings to be followed.
 
-            It also belongs here on the merits. This card already answers "what
-            was the last command and where did the actuators end up"; typing one
-            yourself is the same question asked forwards.
+            The typed command exists to separate two failures that look
+            identical from the outside. When a run produces no movement, the
+            cause is either the model's answer or the plumbing — validator,
+            WebSocket, serial link, firmware. Typing C settles it in one action,
+            with no inference in the way. It is not a shortcut around
+            validation: the backend puts a typed command through the same seven
+            stages a model's answer goes through.
 
-            Its purpose is to separate two failures that look identical from the
-            outside. When a run produces no movement, the cause is either the
-            model's answer or the plumbing — validator, WebSocket, serial link,
-            firmware. Typing C settles it in one action, with no inference in the
-            way. It is not a shortcut around validation: the backend puts a typed
-            command through the same seven stages a model's answer goes through.
+            Only the field flexes. Everything else is shrink-0, so a long
+            validator message steals width from the input rather than wrapping
+            the row and undoing the compaction.
           -->
-          <div class="mb-2 flex items-center gap-2 rounded-md border border-ink-200 bg-ink-50 px-2 py-1.5">
-            <mat-icon class="!h-4 !w-4 shrink-0 !text-[16px] text-ink-400">keyboard</mat-icon>
-            <input
-              class="lab-mono min-w-0 flex-1 rounded border border-ink-200 bg-white px-2 py-1 text-[12px] uppercase outline-none focus:border-pink"
-              placeholder="Test a command:  C  ·  A320,B240  ·  P  ·  S"
-              spellcheck="false"
-              [(ngModel)]="manualCommand"
-              (keyup.enter)="sendManual()" />
+          <div class="mb-2 flex items-center gap-2">
+            <span class="lab-label shrink-0 whitespace-nowrap">Actuator state</span>
+
+            <!--
+              The icon sits inside the field. A bordered container holding a
+              bordered input was two frames around one control, and the doubled
+              padding was most of this row's height.
+            -->
+            <div class="relative min-w-0 flex-1">
+              <mat-icon class="pointer-events-none absolute left-2 top-1/2 !h-4 !w-4 -translate-y-1/2 !text-[16px] text-ink-400">
+                keyboard
+              </mat-icon>
+              <input
+                class="lab-mono h-[26px] w-full rounded border border-ink-200 bg-white pl-7 pr-2 text-[11px] uppercase outline-none focus:border-pink"
+                placeholder="Test a command:  C  ·  A320,B240  ·  P  ·  S"
+                spellcheck="false"
+                [(ngModel)]="manualCommand"
+                (keyup.enter)="sendManual()" />
+            </div>
 
             <button mat-flat-button color="primary"
-                    class="!h-[28px] !min-w-0 !px-3 !text-[11px]"
+                    class="!h-[26px] !min-w-0 shrink-0 !px-2.5 !text-[11px]"
                     [disabled]="manual.sending() || !manualCommand.trim()"
                     [matTooltip]="link.connected()
                       ? 'Validate, render here, and transmit to the prosthesis.'
@@ -242,33 +241,52 @@ import { CameraView, HandScene } from './hand-scene';
               </mat-icon>
               Test
             </button>
-          </div>
 
-          <!--
-            One line of feedback, distinguishing three outcomes a single "sent"
-            message would flatten: rejected by validation, accepted but nothing
-            is watching, and delivered to both destinations.
-          -->
-          @if (manual.error(); as message) {
-            <div class="mb-2 flex items-start gap-1.5 text-[11px] text-pink">
-              <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">block</mat-icon>
-              <span class="min-w-0">{{ message }}</span>
-            </div>
-          } @else if (manual.lastResult(); as result) {
-            <div class="mb-2 flex items-center gap-1.5 text-[11px] text-ink-600">
-              <mat-icon class="!h-3.5 !w-3.5 !text-[13px] text-navy">check</mat-icon>
-              <span class="lab-mono text-navy">{{ result.normalised_serial }}</span>
-              <span>
-                @if (!result.simulator_clients) {
-                  · accepted, but no simulator client is attached
-                } @else if (link.connected()) {
-                  · sent to the simulator and the prosthesis
-                } @else {
-                  · sent to the simulator
-                }
+            <!--
+              The outcome of what you typed, distinguishing three results a
+              single "sent" would flatten: rejected, accepted with nothing
+              watching, delivered. Truncated with the full text on hover, so a
+              long validator message cannot grow the card back.
+            -->
+            @if (manual.error(); as message) {
+              <span class="flex min-w-0 max-w-[30%] shrink-0 items-center gap-1 text-[11px] text-pink"
+                    [matTooltip]="message">
+                <mat-icon class="!h-3.5 !w-3.5 shrink-0 !text-[13px]">block</mat-icon>
+                <span class="truncate">{{ message }}</span>
               </span>
-            </div>
-          }
+            } @else if (manual.lastResult(); as result) {
+              <span class="flex min-w-0 max-w-[30%] shrink-0 items-center gap-1 text-[11px] text-ink-600">
+                <mat-icon class="!h-3.5 !w-3.5 shrink-0 !text-[13px] text-navy">check</mat-icon>
+                <span class="lab-mono shrink-0 text-navy">{{ result.normalised_serial }}</span>
+                <span class="truncate">
+                  @if (!result.simulator_clients) {
+                    · no client
+                  } @else if (link.connected()) {
+                    · sim + hand
+                  } @else {
+                    · sim
+                  }
+                </span>
+              </span>
+            }
+
+            <!--
+              The frame the hand is actually holding, kept at the far right and
+              behind a divider. It is a different claim from the line before it:
+              that one is what your keystroke did, this one is what is rendered
+              — and after a model run they are not the same command.
+            -->
+            @if (movement(); as frame) {
+              <span class="flex shrink-0 items-center gap-1.5 border-l border-ink-200 pl-2">
+                <span class="lab-mono rounded bg-navy px-1.5 py-0.5 text-[11px] text-white">
+                  {{ frame.serial_command ?? '—' }}
+                </span>
+                <span class="lab-mono whitespace-nowrap text-[10px] text-ink-500">
+                  {{ frame.source }} · {{ frame.duration_ms }}ms
+                </span>
+              </span>
+            }
+          </div>
 
           <div class="grid grid-cols-6 gap-2">
             @for (actuator of actuators(); track actuator.letter) {
@@ -289,13 +307,17 @@ import { CameraView, HandScene } from './hand-scene';
             }
           </div>
 
-          <div class="mt-2 flex items-center text-[10px] text-ink-500">
-            <span>drag to rotate · scroll to zoom · right-drag to pan.</span>
-          </div>
-
-          <div class="mt-2 flex items-center justify-between text-[10px] text-ink-500">
-            <span>Pose comes only from validated LLM output — the camera is yours, the hand is not.</span>
-            <button class="flex items-center gap-1 font-semibold text-ink-500 hover:text-pink"
+          <!--
+            Both hints on one line. They were two rows of the same kind of text —
+            camera controls and the note that the pose is not one of them — and
+            stacking them spent a row of height on a single idea.
+          -->
+          <div class="mt-1.5 flex items-center justify-between gap-3 text-[10px] text-ink-500">
+            <span class="truncate">
+              drag to rotate · scroll to zoom · right-drag to pan — the camera is
+              yours, the pose comes only from validated output.
+            </span>
+            <button class="flex shrink-0 items-center gap-1 font-semibold text-ink-500 hover:text-pink"
                     matTooltip="Return the hand to the neutral open pose (end-of-session requirement)."
                     (click)="scene.resetToRest()">
               <mat-icon class="!h-3.5 !w-3.5 !text-[14px]">back_hand</mat-icon>
