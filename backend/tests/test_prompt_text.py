@@ -61,9 +61,8 @@ S STOP
 X CALIBRATION
 I INITIALIZATION
 S, X, I must always be sent alone.
-Bluetooth protocol
-ASCII
-Uppercase
+Command format
+Uppercase letters
 Comma-separated
 Examples
 P
@@ -186,8 +185,49 @@ def test_the_blocks_carry_the_versions_this_text_was_filed_under():
     studies had happened. That history belongs in git.
     """
     assert SYSTEM_PROMPT_VERSION == "1.0"
-    assert TECHNICAL_CONTEXT_VERSION == "1.0"
+    # 1.1: the transport is gone. The model does not open the socket or
+    # choose the baud rate, so naming Bluetooth spent context on a fact it
+    # could not act on. The command *syntax* is what it needs, and stays.
+    assert TECHNICAL_CONTEXT_VERSION == "1.1"
     # 1.1: states what no_action means on the wire. The version moved because
     # the text did, so the seed files a new artefact and runs before and after
     # stay distinguishable — they were given different instructions.
     assert EMG_CONTEXT_VERSION == "1.1"
+
+
+def test_the_model_is_told_nothing_about_the_transport():
+    """It does not open the socket, choose the baud rate, or see the wire.
+
+    The block used to begin its format section with "Bluetooth protocol /
+    ASCII". That is true of the system and irrelevant to the model, and every
+    token of it was subtracted from the context the EMG needed. What the model
+    acts on is the syntax — uppercase, comma-separated — which is what remains.
+    """
+    context = build_technical_context()
+    for word in ("Bluetooth", "ASCII", "baud", "SPP", "115200", "newline"):
+        assert word not in context
+
+    assert "Command format" in context
+    assert "Uppercase letters" in context
+    assert "Comma-separated" in context
+
+
+def test_the_frozen_blocks_carry_only_what_the_model_can_act_on():
+    """Role, commands, EMG interpretation, output. Nothing else.
+
+    Stated as a test because context is a budget: on an 8k model every token of
+    background is a token the matrix does not get, and the temptation to add
+    "just one more useful fact" is what fills it.
+    """
+    frozen = SYSTEM_PROMPT + build_technical_context() + build_emg_context()
+
+    # No transport, no database, no platform internals.
+    for leak in ("Bluetooth", "PostgreSQL", "WebSocket", "simulator",
+                 "validation stage", "frozen_context"):
+        assert leak not in frozen
+
+    # And it does carry the four things it must.
+    assert "prosthetic hand" in frozen          # role
+    assert "A Pinky" in frozen                   # commands
+    assert "Flexor Digitorum" in frozen          # EMG
+    assert "JSON" in frozen                      # output

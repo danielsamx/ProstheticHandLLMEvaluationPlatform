@@ -52,6 +52,15 @@ export interface SamplingConfiguration {
   presence_penalty: number;
   stop_sequences: string[];
   response_format: 'text' | 'json_object' | 'json_schema';
+  /**
+   * Suppress the model's thinking channel.
+   *
+   * The single most consequential setting for a reasoning model on this task. A
+   * Qwen3-class model splits its output — working-out to a reasoning channel,
+   * answer to `content` — and given a hard classification with a small budget it
+   * can spend the whole budget deliberating and return nothing usable.
+   */
+  disable_reasoning: boolean;
   extra_params: Record<string, unknown>;
   is_favorite: boolean;
   use_count?: number;
@@ -290,6 +299,37 @@ export interface PromptConfiguration {
   executions: number;
   /** Per model, because a configuration is only comparable within one. */
   by_model: ConfigurationModelResult[];
+}
+
+/** One command that reached the simulator, the prosthesis, or both. */
+export interface MovementLogEntry {
+  id: string;
+  created_at: string;
+  serial_command: string;
+  handedness: Handedness;
+  actuator_positions: Record<string, number>;
+  duration_ms: number | null;
+  /** What produced it: a model run, a manual test, or a replay. */
+  source: 'execution' | 'manual' | 'replay';
+  execution_id: string | null;
+  triggered_by_email: string | null;
+  /** Two independent destinations: either can arrive while the other does not. */
+  sent_to_simulator: boolean;
+  sent_to_prosthesis: boolean;
+  transport: 'serial' | 'ble' | null;
+  delivery_error: string | null;
+  notes: string | null;
+}
+
+export interface ManualCommandResult {
+  id: string;
+  serial_command: string;
+  normalised_serial: string | null;
+  actuator_positions: Record<string, number>;
+  duration_ms: number | null;
+  /** Zero means nothing is watching — different from a rejected command. */
+  simulator_clients: number;
+  warnings: string[];
 }
 
 export interface LabPreset {

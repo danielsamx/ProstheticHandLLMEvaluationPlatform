@@ -1,8 +1,16 @@
 """Block 2 of 4 - the Technical Context.
 
 What the hand *is*: actuators and their ranges, the gestures the firmware
-implements, the wire protocol, the safety envelope. Nothing about EMG — that
-moved to block 3 when it became its own artefact.
+implements, the syntax of a command, the safety envelope. Nothing about EMG —
+that moved to block 3 when it became its own artefact.
+
+Nothing about the transport either. The block used to open its format section
+with "Bluetooth protocol / ASCII", which told the model about a link it has no
+part in: it does not open the socket, choose the baud rate or see the wire. What
+it needs is the *syntax* — uppercase letters, comma-separated — and that is what
+remains. Transport belongs to `app.domain.protocol` and to the browser's serial
+link, and mentioning it here only spent context on a fact the model cannot act
+on.
 
 The split is not cosmetic. "What can this hand do?" is a fact about hardware
 that changes only when the hardware does; "how should EMG be interpreted?" is a
@@ -30,7 +38,6 @@ from app.domain.hand_spec import (
     ACTUATORS,
     EXCLUSIVE_COMMANDS,
     GESTURES,
-    PROTOCOL,
     SAFETY,
     Actuator,
     LimitProfile,
@@ -48,7 +55,7 @@ from app.domain.hand_spec import (
 #: From here the version means what a researcher expects it to mean: 1.0 is the
 #: text this platform ships with, and anything above it is a change someone
 #: made deliberately and can be asked about.
-TECHNICAL_CONTEXT_VERSION: Final[str] = "1.0"
+TECHNICAL_CONTEXT_VERSION: Final[str] = "1.1"
 TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - generated from manuals"
 
 #: The firmware's identifiers, spelled as the author's table spells them.
@@ -111,9 +118,8 @@ Actuators
 Preset gestures
 {_gesture_table()}
 {exclusive} must always be sent alone.
-Bluetooth protocol
-{PROTOCOL.encoding}
-Uppercase
+Command format
+Uppercase letters
 Comma-separated
 Examples
 P

@@ -9,6 +9,7 @@ from app.api.v1 import (
     experiments,
     governance,
     hand,
+    movement,
     projects,
     prompts,
     providers,
@@ -18,6 +19,7 @@ api_router = APIRouter()
 
 # Reference data
 api_router.include_router(hand.router)
+api_router.include_router(movement.router)
 api_router.include_router(providers.router)
 
 # Organisation

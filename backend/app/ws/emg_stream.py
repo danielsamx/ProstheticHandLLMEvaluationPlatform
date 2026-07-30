@@ -100,6 +100,55 @@ async def broadcast_movement(execution) -> int:
     return delivered
 
 
+async def publish_pose(
+    serial_command: str,
+    *,
+    pose,
+    handedness,
+    source: str,
+) -> int:
+    """Push a pose that has no Execution behind it.
+
+    `broadcast_movement` needs a stored `SimulatorMovement`, which only exists
+    for a model run. A manual test has no execution and no metrics — it is a
+    command and a resolved pose — but the simulator must render it identically,
+    or the test would prove nothing about the path a real command takes.
+
+    The payload keeps the same shape for exactly that reason: the simulator has
+    one code path, and it cannot tell a hand-typed command from a model's.
+    """
+    # `HandPose.to_dict()` rather than a hand-rolled walk over the fields.
+    #
+    # The first version read `state.__dict__` for each joint, which raised
+    # AttributeError: `JointState` is a slots dataclass and has no instance
+    # dictionary. But the deeper mistake was writing a second serialiser at all:
+    # `to_dict` already exists, already rounds the angles the way the stored
+    # movements are rounded, and is the shape the simulator was built to parse.
+    # A parallel one could only ever agree or drift.
+    resolved = pose.to_dict() if pose else {}
+
+    payload = {
+        "type": "movement",
+        "execution_id": None,
+        "status": "manual",
+        "handedness": resolved.get(
+            "handedness",
+            handedness.value if hasattr(handedness, "value") else handedness,
+        ),
+        "limit_profile": resolved.get("limit_profile"),
+        "source": source,
+        "serial_command": serial_command,
+        "actuator_positions": resolved.get("actuator_positions", {}),
+        "actuator_normalised": resolved.get("actuator_normalised", {}),
+        # The stored-movement path names this field `joint_angles`, and the
+        # simulator reads that name. `to_dict` calls it `joints`.
+        "joint_angles": resolved.get("joints", []),
+        "duration_ms": resolved.get("duration_ms", 0),
+        "emitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return await registry.publish(payload)
+
+
 async def broadcast_rejection(execution, reason: str, stage: str | None) -> int:
     """Tell the simulator that a response was rejected, so it can show the
     failure without moving the hand."""

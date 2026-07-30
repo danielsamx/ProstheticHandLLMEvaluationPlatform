@@ -9,12 +9,14 @@ import {
   inject,
   viewChild,
 } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { Handedness } from '@core/models/hand.model';
 import { LabStore } from '@core/services/lab.store';
+import { MovementStore } from '@core/services/movement.store';
 import { ProsthesisLinkService } from '@core/services/prosthesis-link.service';
 import { SimulatorBridgeService } from '@core/services/simulator-bridge.service';
 import { CameraView, HandScene } from './hand-scene';
@@ -30,7 +32,7 @@ import { CameraView, HandScene } from './hand-scene';
   selector: 'ph-simulator-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatButtonModule, MatIconModule, MatTooltipModule],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatTooltipModule],
   template: `
     <div class="relative h-full w-full overflow-hidden bg-gradient-to-b from-ink-50 to-white">
       <!-- Viewport: OrbitControls binds its listeners to this element -->
@@ -200,6 +202,74 @@ import { CameraView, HandScene } from './hand-scene';
             }
           </div>
 
+          <!--
+            ── Manual command ──────────────────────────────────────────────
+
+            Inside this card rather than floating above it. Two absolutely
+            positioned boxes both pinned to bottom-4 stack, and the later one in
+            the DOM wins — which is why this input was invisible: the actuator
+            read-out was painting straight over it.
+
+            It also belongs here on the merits. This card already answers "what
+            was the last command and where did the actuators end up"; typing one
+            yourself is the same question asked forwards.
+
+            Its purpose is to separate two failures that look identical from the
+            outside. When a run produces no movement, the cause is either the
+            model's answer or the plumbing — validator, WebSocket, serial link,
+            firmware. Typing C settles it in one action, with no inference in the
+            way. It is not a shortcut around validation: the backend puts a typed
+            command through the same seven stages a model's answer goes through.
+          -->
+          <div class="mb-2 flex items-center gap-2 rounded-md border border-ink-200 bg-ink-50 px-2 py-1.5">
+            <mat-icon class="!h-4 !w-4 shrink-0 !text-[16px] text-ink-400">keyboard</mat-icon>
+            <input
+              class="lab-mono min-w-0 flex-1 rounded border border-ink-200 bg-white px-2 py-1 text-[12px] uppercase outline-none focus:border-pink"
+              placeholder="Test a command:  C  ·  A320,B240  ·  P  ·  S"
+              spellcheck="false"
+              [(ngModel)]="manualCommand"
+              (keyup.enter)="sendManual()" />
+
+            <button mat-flat-button color="primary"
+                    class="!h-[28px] !min-w-0 !px-3 !text-[11px]"
+                    [disabled]="manual.sending() || !manualCommand.trim()"
+                    [matTooltip]="link.connected()
+                      ? 'Validate, render here, and transmit to the prosthesis.'
+                      : 'Validate and render here. No hardware is connected.'"
+                    (click)="sendManual()">
+              <mat-icon class="!h-4 !w-4 !text-[16px]">
+                {{ manual.sending() ? 'hourglass_empty' : 'play_arrow' }}
+              </mat-icon>
+              Test
+            </button>
+          </div>
+
+          <!--
+            One line of feedback, distinguishing three outcomes a single "sent"
+            message would flatten: rejected by validation, accepted but nothing
+            is watching, and delivered to both destinations.
+          -->
+          @if (manual.error(); as message) {
+            <div class="mb-2 flex items-start gap-1.5 text-[11px] text-pink">
+              <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">block</mat-icon>
+              <span class="min-w-0">{{ message }}</span>
+            </div>
+          } @else if (manual.lastResult(); as result) {
+            <div class="mb-2 flex items-center gap-1.5 text-[11px] text-ink-600">
+              <mat-icon class="!h-3.5 !w-3.5 !text-[13px] text-navy">check</mat-icon>
+              <span class="lab-mono text-navy">{{ result.normalised_serial }}</span>
+              <span>
+                @if (!result.simulator_clients) {
+                  · accepted, but no simulator client is attached
+                } @else if (link.connected()) {
+                  · sent to the simulator and the prosthesis
+                } @else {
+                  · sent to the simulator
+                }
+              </span>
+            </div>
+          }
+
           <div class="grid grid-cols-6 gap-2">
             @for (actuator of actuators(); track actuator.letter) {
               <div class="rounded border border-ink-200 bg-ink-50 p-2">
@@ -246,6 +316,19 @@ export class SimulatorPanel implements AfterViewInit, OnDestroy {
   protected readonly store = inject(LabStore);
   protected readonly bridge = inject(SimulatorBridgeService);
   protected readonly link = inject(ProsthesisLinkService);
+  protected readonly manual = inject(MovementStore);
+
+  /** The typed command, uncommitted until Test is pressed. */
+  protected manualCommand = '';
+
+  protected async sendManual(): Promise<void> {
+    const command = this.manualCommand.trim();
+    if (!command) return;
+    // The field is not cleared on success. A researcher testing the mechanics
+    // sends the same command repeatedly, and clearing it would mean retyping
+    // every time.
+    await this.manual.send(command, this.store.handedness());
+  }
   protected readonly scene = new HandScene();
 
   private readonly viewport = viewChild.required<ElementRef<HTMLDivElement>>('viewport');

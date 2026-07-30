@@ -132,9 +132,165 @@ def check_imports() -> list[str]:
     return problems
 
 
+#: Tags that never carry a closing tag, so counting them would always mismatch.
+_VOID_TAGS = frozenset({
+    "input", "img", "br", "hr", "source", "track", "area", "base", "col",
+    "embed", "link", "meta", "param", "wbr",
+})
+
+#: Elements worth balancing. Restricted on purpose: `<ng-template>` and Angular
+#: control flow have their own syntax, and self-closing component tags
+#: (`<ph-emg-panel />`) are legal, so a blanket check would be noise.
+_BALANCED_TAGS = ("div", "span", "table", "thead", "tbody", "tr", "td", "th",
+                  "button", "p", "dl", "pre", "label", "select", "textarea")
+
+
+def check_template_balance() -> list[str]:
+    """Unclosed elements inside a component template.
+
+    Angular finds these, but only at build time and with a message that points at
+    wherever the parser gave up rather than at the tag that was dropped. This
+    names the tag and the count.
+
+    Worth checking because the failure mode is editing, not writing: removing a
+    region by index — as happened here, cutting a duplicated block and taking its
+    parent's closing tag with it — leaves a template that reads correctly and
+    parses as garbage.
+    """
+    problems: list[str] = []
+
+    for path in sorted(ROOT.rglob("*.ts")):
+        text = path.read_text(encoding="utf-8")
+        opener = re.search(r"template:\s*`", text)
+        if not opener:
+            continue
+        start = opener.end()
+        end = text.find("`", start)
+        while end != -1 and text[end - 1] == "\\":
+            end = text.find("`", end + 1)
+        if end == -1:
+            continue
+        template = text[start:end]
+
+        for tag in _BALANCED_TAGS:
+            if tag in _VOID_TAGS:
+                continue
+            # `<div` but not `<divider`; `/>` excluded so self-closing is ignored.
+            opens = len(re.findall(rf"<{tag}(?=[\s>])(?![^>]*/>)", template))
+            closes = len(re.findall(rf"</{tag}>", template))
+            if opens != closes:
+                line = text[:start].count("\n") + 1
+                problems.append(
+                    f"{path.relative_to(ROOT.parent)}:{line}: template has "
+                    f"{opens} <{tag}> and {closes} </{tag}> — "
+                    f"{abs(opens - closes)} unbalanced."
+                )
+
+    return problems
+
+
+def check_stacked_overlays() -> list[str]:
+    """Two absolutely positioned boxes pinned to the same edge.
+
+    They overlap, and the later one in the DOM wins — silently. That is how the
+    manual command field ended up invisible: it was placed at `absolute bottom-4
+    left-4 right-4`, and the actuator read-out sixty lines below used the same
+    coordinates and painted straight over it.
+
+    Nothing errors, nothing warns, and the element is in the DOM with a non-zero
+    size, so it survives every check that looks at the code rather than the
+    layout. Counting the collisions is the cheapest way to notice.
+    """
+    problems: list[str] = []
+    # An `absolute` box pinned on an edge with matching insets.
+    anchored = re.compile(
+        r'class="[^"]*\babsolute\b[^"]*\b(top|bottom)-(\d+)[^"]*\bleft-(\d+)[^"]*\bright-(\d+)',
+    )
+
+    for path in sorted(ROOT.rglob("*.ts")):
+        text = path.read_text(encoding="utf-8")
+        if "template:" not in text:
+            continue
+
+        seen: dict[tuple[str, ...], int] = {}
+        for number, line in enumerate(text.splitlines(), start=1):
+            match = anchored.search(line)
+            if not match:
+                continue
+            key = match.groups()
+            if key in seen:
+                edge, offset, left, right = key
+                problems.append(
+                    f"{path.relative_to(ROOT.parent)}:{number}: absolute box at "
+                    f"{edge}-{offset} left-{left} right-{right} overlaps the one at "
+                    f"line {seen[key]}. The later one paints over the earlier one."
+                )
+            else:
+                seen[key] = number
+
+    return problems
+
+
+def check_duplicate_members() -> list[str]:
+    """Two class members with the same name.
+
+    TypeScript reports this as TS2300 and TS2717, and the template picks up the
+    *last* declaration — so injecting a service over an existing signal silently
+    changed what five template expressions referred to, and the build failed on
+    call signatures rather than on the collision that caused it.
+
+    Worth a static check because the failure is at the bottom of a long class and
+    the cause is at the top: `movement = inject(MovementStore)` added near the
+    constructor, `movement = computed(...)` already present 70 lines below.
+    """
+    problems: list[str] = []
+    member = re.compile(
+        r"^\s{2}(?:protected |private |public |readonly |static )*"
+        r"(?:readonly )?([A-Za-z_$][\w$]*)\s*(?:[:=]|\()",
+    )
+
+    for path in sorted(ROOT.rglob("*.ts")):
+        text = path.read_text(encoding="utf-8")
+        # Only look inside a class body, and only at two-space indentation, which
+        # is where this codebase puts members. Anything deeper is a local.
+        seen: dict[str, int] = {}
+        in_class = False
+        for number, line in enumerate(text.splitlines(), start=1):
+            if re.match(r"^export (?:abstract )?class \b", line):
+                in_class, seen = True, {}
+                continue
+            if not in_class:
+                continue
+
+            match = member.match(line)
+            if not match:
+                continue
+            name = match.group(1)
+            # Keywords that can look like a member at this indentation.
+            if name in {"constructor", "if", "for", "return", "get", "set", "async"}:
+                continue
+            if name in seen:
+                problems.append(
+                    f"{path.relative_to(ROOT.parent)}:{number}: duplicate class member "
+                    f"{name!r} — also declared at line {seen[name]}. "
+                    "The template will bind to the last one (TS2300/TS2717)."
+                )
+            else:
+                seen[name] = number
+
+    return problems
+
+
 def main() -> int:
     files = list(ROOT.rglob("*.ts"))
-    problems = check_decorator_literals() + check_imports() + check_request_contracts()
+    problems = (
+        check_decorator_literals()
+        + check_imports()
+        + check_request_contracts()
+        + check_duplicate_members()
+        + check_template_balance()
+        + check_stacked_overlays()
+    )
 
     if problems:
         print(f"✗ {len(problems)} problem(s) across {len(files)} TypeScript files:\n")
@@ -143,8 +299,9 @@ def main() -> int:
         return 1
 
     print(
-        f"✓ {len(files)} TypeScript files: decorator literals, imports and "
-        "request contracts are sound"
+        f"✓ {len(files)} TypeScript files: decorator literals, imports, "
+        "request contracts, member names, template balance and overlay "
+        "positions are sound"
     )
     return 0
 

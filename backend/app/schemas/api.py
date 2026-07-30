@@ -111,6 +111,10 @@ class SamplingConfigurationIn(BaseModel):
     presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     stop_sequences: list[str] = Field(default_factory=list, max_length=8)
     response_format: str = Field(default="json_object", pattern="^(text|json_object|json_schema)$")
+    #: Suppress the model's thinking channel. On by default: a reasoning model
+    #: given a hard classification can spend its whole budget deliberating and
+    #: return an empty answer.
+    disable_reasoning: bool = True
     extra_params: dict[str, Any] = Field(default_factory=dict)
     is_favorite: bool = False
 
@@ -496,6 +500,46 @@ class PromptConfigurationOut(BaseModel):
     #: one. Averaging a 4B model and a 30B model under the same prompt produces
     #: a number that describes neither.
     by_model: list[ConfigurationModelResult] = Field(default_factory=list)
+
+
+class ManualCommandIn(BaseModel):
+    """A command typed by a researcher to test the link or the mechanics."""
+
+    serial_command: str = Field(max_length=128)
+    handedness: Handedness = Handedness.RIGHT
+    limit_profile: LimitProfileId | None = None
+    notes: str | None = None
+
+
+class ManualCommandOut(BaseModel):
+    id: uuid.UUID
+    serial_command: str
+    normalised_serial: str | None = None
+    actuator_positions: dict[str, Any] = Field(default_factory=dict)
+    duration_ms: int | None = None
+    #: How many simulator clients received it. Zero means nothing is watching,
+    #: which is a different situation from a rejected command and worth saying.
+    simulator_clients: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MovementLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    created_at: datetime
+    serial_command: str
+    handedness: str
+    actuator_positions: dict[str, Any] = Field(default_factory=dict)
+    duration_ms: int | None = None
+    source: str
+    execution_id: uuid.UUID | None = None
+    triggered_by_email: str | None = None
+    sent_to_simulator: bool
+    sent_to_prosthesis: bool
+    transport: str | None = None
+    delivery_error: str | None = None
+    notes: str | None = None
 
 
 class ExecutionStats(BaseModel):

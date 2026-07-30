@@ -38,7 +38,13 @@ litellm.set_verbose = settings.litellm_verbose
 litellm.telemetry = False
 
 #: Knobs that local runtimes commonly ignore. Reported, never fatal.
-_FRAGILE_PARAMS = ("top_k", "seed", "frequency_penalty", "presence_penalty")
+_FRAGILE_PARAMS = (
+    "top_k", "seed", "frequency_penalty", "presence_penalty",
+    # A runtime that ignores these keeps thinking on, which changes the answer
+    # rather than merely the timing. Recorded as dropped so a run whose reasoning
+    # was not actually suppressed is distinguishable from one where it was.
+    "chat_template_kwargs", "reasoning_effort",
+)
 
 
 class LlmCallError(RuntimeError):

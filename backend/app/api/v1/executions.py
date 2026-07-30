@@ -25,6 +25,8 @@ from app.schemas.api import (
     RunExecutionIn,
     RunExecutionOut,
 )
+from app.models.movement_log import MovementSource
+from app.services import movement_service
 from app.services.execution_service import ExecutionRequestError, run_execution
 from app.services.metrics_service import aggregate_determinism
 from app.ws.emg_stream import broadcast_movement
@@ -83,10 +85,24 @@ async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_sessi
 
     await session.flush()
 
-    # Push the first successful movement to any attached simulator client.
+    # Push the first successful movement to any attached simulator client, and
+    # log the transmission. The log is what answers "did the hand receive this?"
+    # — a resolved pose is not a delivered one, and only the log distinguishes
+    # them.
     for execution in executions:
         if execution.validation_passed and execution.movement is not None:
-            await broadcast_movement(execution)
+            delivered = await broadcast_movement(execution)
+            await movement_service.record(
+                session,
+                serial_command=execution.movement.serial_command or "",
+                handedness=execution.movement.handedness,
+                source=MovementSource.EXECUTION,
+                actuator_positions=execution.movement.actuator_positions,
+                duration_ms=execution.movement.duration_ms,
+                execution_id=execution.id,
+                sent_to_simulator=delivered > 0,
+                sent_to_prosthesis=False,
+            )
             break
 
     determinism = None
@@ -432,5 +448,18 @@ async def replay_movement(
             status.HTTP_409_CONFLICT,
             "This execution produced no validated movement; nothing to replay.",
         )
-    await broadcast_movement(execution)
+    delivered = await broadcast_movement(execution)
+    # A replay moves the hand exactly as the original did, so it is logged as a
+    # transmission in its own right. Attributing it to the original execution
+    # would make the log claim one movement where two happened.
+    await movement_service.record(
+        session,
+        serial_command=execution.movement.serial_command or "",
+        handedness=execution.movement.handedness,
+        source=MovementSource.REPLAY,
+        actuator_positions=execution.movement.actuator_positions,
+        duration_ms=execution.movement.duration_ms,
+        execution_id=execution.id,
+        sent_to_simulator=delivered > 0,
+    )
     return {"replayed": True, "execution_id": str(execution.id)}

@@ -146,6 +146,12 @@ export class App implements OnInit {
       icon: 'insights',
       tooltip: 'The accumulated experimental record',
     },
+    {
+      path: '/logs',
+      label: 'Movement log',
+      icon: 'swap_horiz',
+      tooltip: 'Every command that reached the simulator or the prosthesis',
+    },
   ];
 
   ngOnInit(): void {

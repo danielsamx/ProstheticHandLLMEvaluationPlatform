@@ -12,6 +12,8 @@ import {
   LabPreset,
   LlmModel,
   LmStudioProbe,
+  ManualCommandResult,
+  MovementLogEntry,
   PromptConfiguration,
   PromptPreview,
   PromptVersion,
@@ -245,6 +247,39 @@ export class ApiService {
     return this.http.post(`${this.base}/export/executions.csv`, body, {
       responseType: 'blob',
     });
+  }
+
+  sendManualCommand(body: {
+    serial_command: string;
+    handedness: Handedness;
+    limit_profile?: LimitProfileId | null;
+    notes?: string | null;
+  }): Observable<ManualCommandResult> {
+    return this.http.post<ManualCommandResult>(`${this.base}/movement/send`, body);
+  }
+
+  /**
+   * Report what the prosthesis did with a command.
+   *
+   * Separate from the send because the two destinations succeed and fail
+   * independently: the simulator renders from the backend, the hardware is
+   * driven from the browser, and one combined write would have to guess at the
+   * half it cannot see.
+   */
+  confirmHardwareDelivery(
+    id: string, transport: 'serial' | 'ble', error?: string,
+  ): Observable<MovementLogEntry> {
+    let params = new HttpParams().set('transport', transport);
+    if (error) params = params.set('error', error);
+    return this.http.post<MovementLogEntry>(
+      `${this.base}/movement/log/${id}/delivered`, {}, { params },
+    );
+  }
+
+  movementLog(limit = 200, source?: string): Observable<MovementLogEntry[]> {
+    let params = new HttpParams().set('limit', limit);
+    if (source) params = params.set('source', source);
+    return this.http.get<MovementLogEntry[]>(`${this.base}/movement/log`, { params });
   }
 
   listPromptConfigurations(): Observable<PromptConfiguration[]> {

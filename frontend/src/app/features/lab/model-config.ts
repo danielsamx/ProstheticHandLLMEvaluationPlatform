@@ -32,7 +32,7 @@ import { LabStore } from '@core/services/lab.store';
         decision — "which model am I running" — and splitting the refresh into a
         separate block made it read like an unrelated maintenance task.
       -->
-      <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] items-end gap-2">
+      <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto_auto] items-end gap-2">
         <div>
           <label class="lab-label">Provider</label>
           <mat-form-field appearance="outline" class="dense-field">
@@ -76,6 +76,36 @@ import { LabStore } from '@core/services/lab.store';
             {{ store.syncingCatalogue() ? 'hourglass_empty' : 'sync' }}
           </mat-icon>
           <span class="hidden lg:inline">Refresh</span>
+        </button>
+
+        <!--
+          Thinking suppression, as a button rather than a labelled row.
+
+          It belongs beside the model because it is a property of *how this model
+          is asked*, not a decoding parameter: it changes which channel the
+          answer arrives on, and a reasoning model given a hard classification
+          can spend its whole budget deliberating and return nothing usable.
+
+          Filled navy when suppressed, amber outline when not. Amber is the
+          state that produces the confusing result, so it is the one that has to
+          catch the eye — a researcher should never have to remember which way
+          they left this.
+        -->
+        <button mat-stroked-button
+                class="!mb-0.5 !h-[34px] !min-w-0 !px-2.5 !text-[11px]"
+                [class]="store.disableReasoning()
+                  ? '!bg-navy !text-white !border-navy'
+                  : '!border-amber !text-navy'"
+                [matTooltip]="store.disableReasoning()
+                  ? 'Thinking suppressed: enable_thinking=false and reasoning_effort=none are sent, so the answer arrives on the content channel. Click to allow reasoning.'
+                  : 'Reasoning allowed. A reasoning model may spend its whole token budget thinking and answer on its reasoning channel instead — or return nothing. Click to suppress.'"
+                (click)="store.disableReasoning.set(!store.disableReasoning())">
+          <mat-icon class="!h-4 !w-4 !text-[16px]">
+            {{ store.disableReasoning() ? 'psychology_alt' : 'psychology' }}
+          </mat-icon>
+          <span class="hidden xl:inline">
+            {{ store.disableReasoning() ? 'No thinking' : 'Thinking' }}
+          </span>
         </button>
       </div>
 
@@ -216,6 +246,7 @@ import { LabStore } from '@core/services/lab.store';
         them removes three ways to make a comparison accidentally incomparable.
         They remain parameters on the API for when a second unit exists.
       -->
+    </div>
   `,
 })
 export class ModelConfig {

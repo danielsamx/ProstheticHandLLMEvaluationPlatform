@@ -127,6 +127,25 @@ class SamplingConfiguration(UUIDMixin, TimestampMixin, Base):
     #: Anything provider-specific LiteLLM should pass through untouched.
     extra_params: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
+    #: Suppress the model's thinking channel.
+    #:
+    #: On by default, and the single most consequential setting for a reasoning
+    #: model on this task. Qwen3-class models split their output: the working-out
+    #: goes to a reasoning channel and the answer to `content`. Given a hard
+    #: classification and a small token budget, such a model can spend the whole
+    #: budget deliberating and return an empty answer — or an `intent` with no
+    #: command behind it.
+    #:
+    #: The same model, same prompt, with thinking off in LM Studio's chat,
+    #: answered `{"C":250,"D":280,"E":0,"F":0}`. Through the API with thinking
+    #: on it answered `{"intent":"no_action","commands":[]}`. Nothing else
+    #: differed.
+    #:
+    #: There is nothing to reason about here anyway: the task is to read eight
+    #: numbers and name a gesture. Deliberation buys no accuracy and costs the
+    #: budget the answer needs.
+    disable_reasoning: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     use_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -151,5 +170,18 @@ class SamplingConfiguration(UUIDMixin, TimestampMixin, Base):
             kwargs["seed"] = self.seed
         if self.stop_sequences:
             kwargs["stop"] = self.stop_sequences
+
+        if self.disable_reasoning:
+            # Two mechanisms, because no single one works everywhere.
+            #
+            # `chat_template_kwargs.enable_thinking` is the Qwen3 convention and
+            # is read by the chat template itself, which is what LM Studio
+            # applies. `reasoning_effort` is the OpenAI spelling that newer
+            # runtimes honour. Sending both covers the models this platform
+            # actually targets; a runtime that understands neither ignores them,
+            # which is the same behaviour as not asking.
+            kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+            kwargs["reasoning_effort"] = "none"
+
         kwargs.update(self.extra_params or {})
         return kwargs

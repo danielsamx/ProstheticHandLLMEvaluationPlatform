@@ -115,6 +115,21 @@ export class LabStore {
   readonly presencePenalty = signal(0);
   readonly responseFormat = signal<'text' | 'json_object' | 'json_schema'>('json_object');
 
+  /**
+   * Suppress the model's thinking channel. On by default.
+   *
+   * The setting that most changes the answer on this task. A reasoning model
+   * splits its output — working-out to a reasoning channel, answer to
+   * `content` — and given a hard classification with a small token budget it can
+   * spend the whole budget deliberating and return nothing usable. The same
+   * model, same prompt, thinking off, returned a pose; thinking on, it returned
+   * `no_action` with an empty command list.
+   *
+   * There is nothing to deliberate about anyway: read eight numbers, name a
+   * gesture.
+   */
+  readonly disableReasoning = signal(true);
+
   // ── Prompt editing ────────────────────────────────────────────────────────
   readonly systemPromptDraft = signal<string>('');
   readonly technicalContextDraft = signal<string>('');
@@ -502,6 +517,10 @@ export class LabStore {
     this.frequencyPenalty.set(config.frequency_penalty);
     this.presencePenalty.set(config.presence_penalty);
     this.responseFormat.set(config.response_format);
+    // `?? true` because rows written before this setting existed have no value,
+    // and the safe reading of "unspecified" is the one that produces a usable
+    // answer: reasoning suppressed.
+    this.disableReasoning.set(config.disable_reasoning ?? true);
   }
 
   private draftConfiguration(
@@ -521,6 +540,7 @@ export class LabStore {
       presence_penalty: this.presencePenalty(),
       stop_sequences: [],
       response_format: this.responseFormat(),
+      disable_reasoning: this.disableReasoning(),
       extra_params: {},
       is_favorite: options.isFavorite ?? false,
     };
