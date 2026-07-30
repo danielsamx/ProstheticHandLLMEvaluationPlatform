@@ -33,7 +33,7 @@ validación, nunca en paralelo. Una respuesta rechazada produce una trama
 |---|---|---|
 | Dominio | `app/domain` | La prótesis, como código. Sin E/S, sin imports de framework. |
 | Contratos | `app/schemas` | Modelos Pydantic v2: salida del LLM, EMG, payloads HTTP |
-| Prompts | `app/prompts` | Tres bloques y ensamblado determinista |
+| Prompts | `app/prompts` | Cuatro bloques y ensamblado determinista |
 | Validación | `app/validation` | Pipeline de siete etapas, funciones puras sobre cadenas |
 | Persistencia | `app/models`, `app/db` | Mapeadores SQLAlchemy 2, sesión asíncrona |
 | Servicios | `app/services` | LiteLLM, orquestador, métricas, EMG, auditoría, exportación |
@@ -173,7 +173,7 @@ Angular evita un tick por frame sobre todo el árbol de componentes.
 El arranque usa `Promise.allSettled`, no `Promise.all`: con este último, un solo
 endpoint caído rechazaba el lote entero y dejaba vacías todas las listas, de modo
 que un endpoint nuevo o inaccesible borraba en silencio el desplegable de
-modelos, los proveedores y los tres bloques de prompt a la vez.
+modelos, los proveedores y los cuatro bloques de prompt a la vez.
 
 ---
 

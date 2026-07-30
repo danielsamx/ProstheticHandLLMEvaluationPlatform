@@ -50,7 +50,6 @@ Un JSON que el firmware de la prótesis podría ejecutar tal cual, por ejemplo:
 
 ```json
 {
-  "hand": "right",
   "intent": "gesture",
   "gesture": "C",
   "serial_command": "C",
@@ -60,6 +59,19 @@ Un JSON que el firmware de la prótesis podría ejecutar tal cual, por ejemplo:
 ```
 
 …que el simulador representa después como una mano cerrándose.
+
+`hand` puede seguir apareciendo y se **ignora**. El EMG de un agarre es la misma
+señal la produzca la mano que la produzca, así que pedirle al modelo que nombrara el
+lado lo obligaba a adivinar algo que la grabación no puede decirle — y una
+adivinanza equivocada echaba a perder una ejecución por lo demás correcta.
+
+Negarse a actuar también es una respuesta válida, y se ve así:
+
+```json
+{ "intent": "no_action", "serial_command": "" }
+```
+
+**Vacío, no `S`.** `S` es STOP, un comando que sí hace algo.
 
 ---
 
@@ -155,17 +167,21 @@ mover un dedo a mano, y es a propósito.
 ## 5. Una ejecución completa, de principio a fin
 
 1. **Elige un proyecto** para que la ejecución quede archivada donde la buscarás.
-2. **Selecciona proveedor y modelo** en *Modelo y decodificación*.
+2. **Selecciona proveedor y modelo** en *Modelo y decodificación*, y confirma que el
+   botón de razonamiento está en azul marino: suprimido.
 3. **Ajusta los parámetros.** Empieza en temperatura 0 con semilla fija.
-4. **Carga una ventana EMG**: pega una matriz, importa un CSV o genera una
-   sintética etiquetada.
-5. *(Opcional)* **Previsualiza el prompt** en *Bloques de prompt → 3 · Dynamic*
-   para ver exactamente qué recibirá el modelo.
-6. **Pulsa Run Evaluation.**
-7. **Lee el resultado**: traza de validación, métricas, respuesta cruda.
-8. **Mira el simulador**: solo se mueve si la validación pasó.
-9. **Repite con otro modelo**, sin cambiar nada más.
-10. **Exporta** cuando tengas suficientes ejecuciones para analizar.
+4. **Carga una ventana EMG**: pega una matriz o importa un CSV.
+5. **Elige qué lleva el bloque dinámico** —Matrix, Features o Both— y comprueba en
+   las tarjetas de presupuesto que cabe.
+6. *(Opcional)* **Escribe el comando serial esperado**, para que la ejecución se
+   puntúe y no solo se valide.
+7. *(Opcional)* **Previsualiza el prompt** en *Bloques de prompt → 4 · Dynamic*, o el
+   prompt completo, para ver exactamente qué recibirá el modelo.
+8. **Pulsa Run Evaluation.**
+9. **Lee el resultado**: traza de validación, métricas, respuesta cruda.
+10. **Mira el simulador**: solo se mueve si la validación pasó.
+11. **Repite con otro modelo**, sin cambiar nada más.
+12. **Exporta** cuando tengas suficientes ejecuciones para analizar.
 
 ---
 
@@ -242,6 +258,32 @@ mismo modelo.
 > no lo admite. Enviarlo igualmente haría que se descartara en silencio, y la
 > ejecución parecería reproducible sin serlo.
 
+### El botón de razonamiento: no es un parámetro de decodificación
+
+Está junto a **Refresh**, en la fila de proveedor y modelo y no entre los mandos de
+arriba, porque es una propiedad de *cómo se le pregunta al modelo* y no de cómo
+muestrea.
+
+**Azul marino relleno = razonamiento suprimido** (por defecto). **Contorno ámbar =
+razonamiento permitido.** El ámbar es el estado que produce resultados confusos, así
+que es el que se dibuja para llamar la atención.
+
+Un modelo de razonamiento —cualquiera de la clase Qwen3— parte su respuesta: el
+desarrollo va a un campo `reasoning_content` y la respuesta a `content`. Ante una
+clasificación difícil con un techo de tokens, puede gastar el techo deliberando y
+dejar `content` **vacío**, y la plataforma registra un fallo de parseo para un modelo
+que seguía pensando. Esta es, con diferencia, la razón más común de que una ejecución
+"falle" sin motivo visible.
+
+Cuando está suprimido se envían dos interruptores: `enable_thinking: false` (la
+convención Qwen3, que lee la plantilla de chat) y `reasoning_effort: "none"` (la
+grafía de OpenAI, que lee el runtime). Los runtimes no coinciden en cuál respetan, y
+el que no reconozca uno simplemente lo ignora.
+
+Si aun así la respuesta llega por el canal de razonamiento, la plataforma la lee como
+respaldo **y registra por qué canal llegó**. Tómalo como señal de que la supresión no
+surtió efecto, no como un éxito.
+
 ### Repeticiones
 
 Sube **Repetitions** por encima de 1 para correr el experimento idéntico varias
@@ -254,7 +296,8 @@ de control a ese modelo.
 
 ## 9. Prompts
 
-Todo prompt enviado a un modelo tiene tres bloques, ensamblados por el backend:
+Todo prompt enviado a un modelo tiene **cuatro** bloques, ensamblados por el
+backend:
 
 ```
 ┌────────────────────────┐
@@ -262,7 +305,9 @@ Todo prompt enviado a un modelo tiene tres bloques, ensamblados por el backend:
 ├────────────────────────┤
 │ 2 · CONTEXTO TÉCNICO   │  congelado — cómo es el hardware
 ├────────────────────────┤
-│ 3 · PROMPT DINÁMICO    │  variable — la ventana EMG
+│ 3 · CONOCIMIENTO EMG   │  congelado — cómo leer la señal
+├────────────────────────┤
+│ 4 · PROMPT DINÁMICO    │  variable — la ventana EMG
 └────────────────────────┘
 ```
 
@@ -278,31 +323,82 @@ independientemente de la descripción del hardware.
 
 ### Bloque 2 — Contexto técnico
 
-La prótesis: comandos, rangos, cinemática, protocolo, reglas de seguridad,
-esquema de salida. **Se genera desde el código**, no se escribe a mano, para que
+La prótesis: actuadores y sus rangos, gestos preestablecidos, sintaxis de comando,
+reglas de seguridad. **Se genera desde el código**, no se escribe a mano, para que
 los límites que se le cuentan al modelo nunca puedan desviarse de los límites que
 aplica el validador.
+
+**Nada sobre Bluetooth.** Antes abría con "Bluetooth protocol / ASCII", describiendo
+un enlace en el que el modelo no toma parte: no abre el socket, no elige los
+baudios, no ve el cable. Lo que necesita es la *sintaxis* del comando, y eso es lo
+que queda.
 
 Se permite editarlo (un contexto escrito a mano es una variable experimental
 legítima) y **Regenerate** restaura siempre el texto canónico.
 
-### Bloque 3 — Prompt dinámico
+### Bloque 3 — Conocimiento EMG
 
-Solo lectura. Pulsa **Preview assembled prompt** para ver exactamente qué se
-enviará, sin gastar un token.
+Cómo leer la señal: el mapa de electrodos, qué descriptores sopesar, y bajo qué
+condiciones STOP es la respuesta correcta.
+
+Separado del bloque 2 a propósito. "¿Qué puede hacer esta mano?" solo cambia cuando
+cambia el hardware; "¿la co-contracción es un STOP o es coactivación fisiológica?" es
+una posición metodológica que revisarás muchas veces. Compartir un solo artefacto
+obligaría a que cada experimento sobre la segunda pregunta reversionara también la
+primera, y ningún efecto podría atribuirse a ninguna.
+
+Este bloque lleva la corrección que más importó en la práctica. Una versión anterior
+decía que una activación flexora y extensora casi igual significaba STOP, lo cual es
+falso fisiológicamente —un agarre normal recluta antagonistas para estabilizar la
+muñeca— y convertía el agarre corriente en una parada de emergencia. Ahora STOP exige
+cuatro condiciones juntas, y la tercera es la que hace el trabajo de verdad:
+**descartar antes todo gesto soportado.**
+
+También dice qué significa la inacción: *"no_action means the hand does not move. It
+is never S, and never O."* Sin esa línea, los modelos que respondían `no_action`
+llenaban el campo de comando con `S` —STOP— porque el esquema exigía un comando y
+STOP era el gesto más mencionado del prompt.
+
+### Bloque 4 — Prompt dinámico
+
+Solo lectura, y el único bloque que cambia. Tres botones eligen qué lleva —**Matrix**,
+**Features**, **Both**— y se aplican al instante, así que el bloque y el presupuesto
+de tokens se vuelven a renderizar al pulsarlos.
+
+**Rows sent** limita cuánta matriz se imprime; pulsa **Apply** para confirmar el
+número. El tope diezma con paso uniforme en vez de truncar, así que el modelo ve todo
+el movimiento y no la línea base previa. Como el paso es entero, 64 sobre 404 filas da
+58, y el panel informa de lo que realmente se envió, no de lo que pediste.
+
+### Leerlo todo junto
+
+**Preview · count tokens** ensambla el prompt exacto sin gastar nada, y puedes
+alternar entre el bloque dinámico solo y el **prompt completo**: los cuatro bloques
+unidos tal como los verá el modelo.
+
+Las tarjetas de presupuesto desglosan el total por bloque. Cuando no cabe, el consejo
+nombra un número de filas sobre el que puedes actuar y no un número de tokens sobre
+el que no.
 
 ### Versionado
 
-Editar el bloque 1 o el 2 crea una **versión nueva**; las existentes no se
-modifican nunca. Un resultado publicado hace seis meses sigue resolviendo a los
-bytes exactos que lo produjeron.
+Editar los bloques 1, 2 o 3 crea una **versión nueva**; las existentes no se modifican
+nunca. Un resultado publicado hace seis meses sigue resolviendo a los bytes exactos
+que lo produjeron. Los cuatro salen en versión **1.0**.
 
-### El hash del contexto congelado
+### Configuraciones de prompt
 
-Bajo la previsualización aparece `frozen_context_sha256`. Dos ejecuciones que
-comparten ese valor vieron constantes idénticas y son directamente comparables.
-Cuando difieren, el endpoint de comparación marca el conjunto como **no
-comparable** en lugar de presentar un ranking que no puede sostener.
+Los tres bloques congelados se resumen juntos en `frozen_context_sha256`, y cada
+ejecución apunta a la **configuración distinta** que ese digest identifica. Están
+deduplicadas: trescientas ejecuciones bajo un montaje dejan una fila, cambiar un
+bloque archiva una segunda, y devolverlo a como estaba reutiliza la primera.
+
+Dos ejecuciones bajo la misma configuración son directamente comparables. Cuando un
+conjunto abarca más de una, la plataforma informa **no comparable** en lugar de
+presentar un ranking que no puede sostener.
+
+La tabla de configuraciones desglosa los resultados **por modelo**, porque una
+configuración solo es comparable dentro de uno.
 
 ---
 
@@ -312,7 +408,7 @@ La entrada es una **matriz de muestras crudas**:
 
 ```
 N filas (instantes de tiempo, ascendente) × 8 columnas (CH1…CH8)
-amplitudes normalizadas a [-1.0, 1.0]
+salida cruda del conversor — nada se filtra, rectifica, normaliza ni escala
 ```
 
 Lee *a lo ancho* de una fila para un instante; lee *hacia abajo* por una columna
@@ -324,45 +420,45 @@ para seguir un electrodo. Una ventana de 200×8 a 1 kHz son 200 ms de señal.
 | CH5–CH7 | Extensores (antebrazo dorsal) | Apertura |
 | CH8 | Braquiorradial | Postural |
 
-### Tres formas de cargarla
+### Cargarla
 
-**Pegar o importar.** CSV, TSV, espacios o JSON. La línea de cabecera se ignora,
-tanto si dice `CH0…CH7` como `CH1…CH8`.
+**Paste matrix.** Filas pegadas directamente: CSV, TSV, espacios o JSON. La línea de
+cabecera se ignora, tanto si dice `CH0…CH7` como `CH1…CH8`.
 
-**Sintetizar.** Elige un gesto del desplegable. La ventana se genera con verdad
-de referencia conocida, así que la exactitud se puntúa automáticamente. Lleva
-semilla, por lo que es repetible en todos los modelos.
+**Import CSV.** Tu archivo de adquisición. El mismo trato de cabecera; se elimina el
+BOM UTF-8.
+
+**Copy CSV / Clear.** La ventana cargada de vuelta hacia fuera, o descartada.
 
 **Streaming en vivo.** Activa **Live acquisition**; el hardware de adquisición
 envía ventanas por WebSocket. Con **Auto-run each frame**, cada trama dispara una
 ejecución completa.
 
-### Escalado de amplitud — léelo
+El selector de ventana sintética estaba antes en primer lugar de esta fila. Generaba
+señales con verdad de referencia conocida, útil para probar la plataforma, pero una
+ejecución contra EMG sintetizado no es evidencia sobre un modelo — y estando primero
+se leía como la vía principal de entrada. El generador sigue disponible en
+`GET /api/v1/emg/synthetic` para comprobar la pipeline misma.
 
-El hardware de adquisición produce cuentas del conversor, no valores
-normalizados, así que la importación tiene que reescalarlas. Cómo lo haga
-importa:
+### Sin escalado de amplitud — léelo
 
-| Modo | Qué hace | Cuándo |
-|---|---|---|
-| **Full scale declarado** | Divide por el rango del conversor | **Por defecto.** Usa este. |
-| **Ya en −1…1** | Rechaza lo que quede fuera de rango | Datos ya normalizados |
-| **Pico por ventana** | Divide por el máximo de esa ventana | Casi nunca |
+**Los valores pasan sin modificarse.** No hay ajuste de normalización, ni full scale
+declarado, ni divisor. Nada entre el electrodo y el prompt reescala nada.
 
-> **Por qué el escalado por pico es peligroso.** Normaliza cada ventana por su
-> propio máximo, así que una ventana en reposo y un agarre máximo salen ambas con
-> pico 1.0. La diferencia de amplitud entre ellas —justo lo que esta plataforma
-> compara— queda destruida. La interfaz avisa siempre que se selecciona.
+Es deliberado y es todo el sentido de la medición: aquello sobre lo que se juzga al
+modelo es lo que produjo el hardware. Una versión anterior de la plataforma dividía
+por un rango de conversor declarado, lo que hacía que cada comparación dependiera de
+un número escrito a mano — y uno equivocado volvía incomparables las grabaciones en
+silencio mientras todo seguía pareciendo correcto.
 
-Pon en **Full scale** el rango real del conversor de tu hardware (512 para un ADC
-con signo de 10 bits, 2048 para 12 bits). Si lo dejas en blanco, el valor se
-infiere de la ventana y se señala como tal, porque un divisor inferido cambia
-entre grabaciones y las vuelve incomparables.
+La interfaz informa de `observed_peak` para que puedas ver el rango de la señal. Nada
+actúa sobre él.
 
-**Comprueba la lectura agregada.** El contexto técnico le dice al modelo que un
-RMS medio por debajo de 0.10 significa reposo. Si tu grabación de un movimiento
-reporta un RMS medio de 0.03, el full scale declarado es demasiado grande y al
-modelo se le está diciendo «reposo» sobre una ventana con actividad.
+**Lo que sobrevive a la falta de escalado** es la cantidad que siempre fue la correcta
+sobre la que razonar: el **balance entre grupos musculares**. La ganancia, la
+colocación de electrodos y el sujeto desplazan la escala absoluta; la razón sobrevive
+a las tres, y por eso el bloque 3 le dice al modelo que sopese el patrón y no un
+umbral aislado.
 
 ### Las trazas
 
@@ -417,7 +513,7 @@ Navy = superada, rosa = la etapa que rechazó, gris = nunca alcanzada.
 | Etapa | Rechaza |
 |---|---|
 | **parse** | No es JSON. Prosa, disculpas, bloques de código. |
-| **schema** | Campos ausentes o de más, mano equivocada, canal desconocido |
+| **schema** | Campos ausentes o de más, canal desconocido. `serial_command` puede ir vacío **solo** para `no_action` |
 | **protocol** | Trama serial malformada, letra de comando inventada |
 | **consistency** | `serial_command` en desacuerdo con los campos estructurados |
 | **range** | Una posición fuera de los límites mecánicos |
@@ -428,10 +524,19 @@ Esta es la vista diagnóstica. «El modelo B falla el 30 % de las veces» no es
 accionable; «el modelo B falla en `parse` porque antepone una explicación al
 JSON» sí lo es.
 
+Una inacción declarada con el comando vacío cortocircuita las cinco últimas etapas
+—no hay nada que comprobar— y pasa. Es una respuesta legítima, registrada como
+`refused_to_act` y no como un fallo.
+
 ### Métricas
 
 Latencia, tokens, coste, rendimiento, intención, patrón detectado, confianza y
-—cuando la ventana está etiquetada— si el gesto fue correcto.
+—cuando aportaste un comando serial esperado— **Match**: ✓, ✗, o – para una
+ejecución que nunca se etiquetó.
+
+Lee **Match** junto a la tasa de aprobación. Pasar la validación solo significa que
+el comando estaba bien formado, en rango y era seguro; un modelo que responde `O` a
+todas las ventanas saca 100 % en validación y 0 % en control.
 
 ### Determinismo
 
@@ -452,7 +557,48 @@ modelo, hora, latencia y, o bien el comando serial, o bien la etapa que falló.
 
 **Replay** vuelve a representar un movimiento guardado en el simulador. Solo las
 ejecuciones que pasaron la validación tienen movimiento, así que la reproducción
-nunca puede resucitar una pose insegura.
+nunca puede resucitar una pose insegura. Un replay se registra igual que cualquier
+otra cosa que haya movido la mano.
+
+### Probar un comando a mano
+
+La fila **Actuator state** del simulador tiene un campo de texto y un botón **Test**.
+Escribe `C`, pulsa Test, mira cerrarse la mano.
+
+Esto separa dos fallos que desde fuera se ven idénticos. Cuando una ejecución no
+produce movimiento, la causa está en la respuesta del modelo o en la plomería:
+validador, WebSocket, enlace serie, firmware. Todo diagnóstico que empiece con una
+inferencia tiene el juicio del modelo de por medio; escribir un comando lo resuelve
+sin él.
+
+**No** es un atajo alrededor de la validación: un comando escrito pasa por las mismas
+siete etapas. A los topes mecánicos no les importa quién eligió el número, y un dedazo
+en un campo de texto puede destrozar un motorreductor exactamente igual que un mal
+modelo.
+
+Un comando rechazado muestra el mensaje del propio validador, que ya nombra el
+actuador, el valor y el perfil que lo rechazó. `· no client` significa aceptado pero
+sin nadie escuchando: un desenlace distinto del rechazo.
+
+### El registro de movimientos
+
+`/logs` — cada comando que movió la mano, que **no** es la misma lista que el
+historial de ejecuciones. Aquel registra qué *respondieron* los modelos; este registra
+qué se *transmitió*.
+
+Las dos divergen en ambos sentidos. Una postura que se resolvió no es una postura que
+se entregó: el enlace con la prótesis puede estar cerrado o caerse a mitad de sesión.
+Y comandos que ningún modelo produjo (pruebas manuales, reenvíos) mueven la mano
+exactamente igual que la respuesta de un modelo, y de otro modo serían movimientos sin
+ningún registro que los explique.
+
+Dos columnas de destino en vez de una bandera de "entregado", porque el simulador se
+dibuja desde el backend mientras el hardware se maneja desde el navegador: cualquiera
+de los dos puede llegar mientras el otro no, y esa asimetría es lo que normalmente
+intentas diagnosticar.
+
+Filtra por origen: **Model** es evidencia, **Manual** es una comprobación de la
+plomería, **Replay** no es ninguna de las dos.
 
 ---
 
@@ -552,17 +698,41 @@ desarrollo el backend acepta loopback y rangos privados en cualquier puerto.
 Recarga la página tras reiniciar el backend. Si sigue vacío, carga un modelo en
 LM Studio y pulsa **Import loaded models**.
 
-### Todas las respuestas fallan en `parse`
+### Todas las respuestas fallan en `parse`, o la respuesta viene vacía
 
-El modelo está escribiendo prosa alrededor del JSON. Prueba a:
+**Revisa primero el botón de razonamiento.** Un `content` vacío de un modelo de
+razonamiento es de lejos la causa más común, y en las métricas se ve exactamente
+igual que una respuesta malformada. Suprime el razonamiento y vuelve a ejecutar antes
+de cambiar nada más.
+
+Si en cambio la respuesta es prosa envolviendo el JSON:
 
 1. Poner **Response format** en `json_object` o `json_schema`.
 2. Bajar la temperatura a 0.
 3. Probar un modelo que siga mejor las instrucciones: los modelos pequeños
    cuantizados a menudo no logran suprimir el preámbulo.
 
-Esto es un hallazgo legítimo, no solo una molestia: es el modelo fallando la
-tarea.
+La prosa alrededor de la respuesta es un hallazgo legítimo, no solo una molestia: es
+el modelo fallando la tarea. Una respuesta vacía de un modelo de razonamiento sin
+suprimir no lo es: eso es un problema de configuración, y registrarlo como fallo del
+modelo sería incorrecto.
+
+### El modelo responde `no_action` cuando el EMG muestra claramente un movimiento
+
+Tres cosas que comprobar, en este orden:
+
+1. **¿Razonamiento suprimido?** Ver arriba.
+2. **¿Cabe el prompt?** Si el contexto de *load* de LM Studio es 8192 y las tarjetas
+   de presupuesto dicen 17.608 tokens, la matriz se está truncando y el modelo lee un
+   estímulo distinto del que elegiste. Cambia a **Features**, sube el contexto de
+   carga, o limita las filas deliberadamente.
+3. **¿Lo estás comparando con el chat de LM Studio?** El chat corre a temperatura
+   0.8 con top-p 0.95 y tu historial de conversación en contexto. Es una condición
+   experimental distinta, no una segunda opinión.
+
+`no_action` acompañado de un comando —`{"intent": "no_action", "serial_command": "S"}`—
+es otro asunto y ahora falla en `consistency`. `S` es STOP, que *sí* hace algo; la
+inacción significa que el campo va vacío.
 
 ### Todas las respuestas fallan en `range`
 
@@ -576,15 +746,27 @@ El runtime no respeta la semilla. Es habitual en backends GGUF. Mira en el
 registro de la ejecución los **parámetros descartados**: lista exactamente qué
 ignoró el runtime.
 
-### Una ventana con movimiento se lee como «reposo»
+### La ejecución expira por timeout
 
-El full scale declarado es demasiado grande para tu hardware. Ve a
-[Escalado de amplitud](#10-el-estímulo-emg).
+`LLM_REQUEST_TIMEOUT_S` vale 1800 segundos por defecto, y es generoso a propósito: un
+modelo grande con **GPU Offload en 0** puede tardar minutos en unos cientos de tokens.
+Si ves un timeout muy por debajo de esa cifra, un valor viejo en `.env` está pisando
+el valor por defecto — Compose lee ese archivo para interpolar *y* lo pasa dentro del
+contenedor, así que una línea obsoleta ahí gana dos veces.
+
+Los dos contadores de reintento están en cero por diseño. Un experimento reintentado
+en silencio gasta el triple de tiempo real y registra un solo resultado.
 
 ### El simulador no se mueve
 
-Es el comportamiento correcto cuando la validación falló. Lee la banda: nombra la
-etapa y el motivo.
+Primero distingue los dos casos:
+
+- **Con una banda que nombra una etapa** — la validación falló, y es el comportamiento
+  correcto. La banda nombra la etapa y el motivo.
+- **Sin banda, no pasa nada** — es la plomería, no el modelo. Escribe `C` en el campo
+  **Test** de la fila Actuator state. Si la mano se mueve, el transporte está bien y
+  el problema está antes; si no, revisa el registro en `/logs` para ver si el comando
+  llegó siquiera a constar como publicado.
 
 ### El cambio de mano tarda la primera vez
 
@@ -611,9 +793,12 @@ inmediatos.
 
 - Escribe la **pregunta de investigación** en el proyecto. Tu yo futuro la
   necesitará.
-- Usa **ventanas etiquetadas** siempre que puedas: la exactitud se puntúa sin
-  anotación manual.
-- **Declara el full scale.** Uno inferido no es comparable entre grabaciones.
+- **Aporta el comando serial esperado.** Sin hoja de respuestas, un modelo que
+  conteste `O` a todas las ventanas saca 100 % en validación y 0 % en control, y nada
+  en el registro puede distinguirlo.
+- **Mantén el botón de razonamiento en un solo estado** durante una comparación, y
+  anota cuál. Cambia por qué canal llega la respuesta, que no es una diferencia
+  menor.
 - **No borres las ejecuciones fallidas.** Son las filas más informativas del
   archivo.
 

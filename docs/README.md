@@ -52,15 +52,20 @@ La documentación técnica extensa también existe en inglés en
 - [Cómo funciona una ejecución](#cómo-funciona-una-ejecución)
 - [El laboratorio, control por control](#el-laboratorio-control-por-control)
   - [1 · Proveedor y modelo](#1--proveedor-y-modelo)
-  - [2 · Parámetros de decodificación](#2--parámetros-de-decodificación)
-  - [3 · Entrada EMG](#3--entrada-emg)
-  - [4 · Qué lleva el prompt dinámico](#4--qué-lleva-el-prompt-dinámico)
-  - [5 · Comando serial esperado](#5--comando-serial-esperado)
-  - [6 · Los cuatro bloques del prompt](#6--los-cuatro-bloques-del-prompt)
+  - [2 · El razonamiento, y por qué hay que desactivarlo](#2--el-razonamiento-y-por-qué-hay-que-desactivarlo)
+  - [3 · Parámetros de decodificación](#3--parámetros-de-decodificación)
+  - [4 · Entrada EMG](#4--entrada-emg)
+  - [5 · Qué lleva el prompt dinámico](#5--qué-lleva-el-prompt-dinámico)
+  - [6 · Comando serial esperado](#6--comando-serial-esperado)
+  - [7 · Los cuatro bloques del prompt](#7--los-cuatro-bloques-del-prompt)
+- [Por qué el mismo modelo responde distinto en el chat de LM Studio](#por-qué-el-mismo-modelo-responde-distinto-en-el-chat-de-lm-studio)
 - [Modo Live](#modo-live)
 - [Conectar la prótesis física](#conectar-la-prótesis-física)
+- [Probar un comando a mano](#probar-un-comando-a-mano)
+- [El registro de movimientos](#el-registro-de-movimientos)
 - [Leer el resultado](#leer-el-resultado)
 - [El dashboard](#el-dashboard)
+- [Configuraciones de prompt](#configuraciones-de-prompt)
 
 ---
 
@@ -91,7 +96,7 @@ experimental. Los bloques 1, 2 y 3 son idénticos byte a byte entre ejecuciones,
 dos modelos difieren, la diferencia es atribuible al modelo y no al prompt. El
 bloque 4 es el estímulo.
 
-Hay tres bloques congelados y no uno porque responden a preguntas de distinta
+Los bloques congelados son tres y no uno porque responden a preguntas de distinta
 naturaleza y se revisan con distinta frecuencia: cómo comportarse, qué puede
 hacer la mano, y cómo leer el EMG. Cada uno puede variarse mientras los otros
 dos quedan idénticos, que es la única forma de atribuir un efecto a uno de
@@ -121,9 +126,44 @@ La **ventana de contexto** del modelo importa aquí más que su número de
 parámetros. LM Studio carga los modelos con un contexto por defecto muy por
 debajo de lo que soporta la arquitectura —habitualmente 4096 u 8192— y ese es el
 número que decide si su prompt cabe. Una matriz EMG de 404 filas necesita unos
-18.000 tokens. Vea [Entrada EMG](#3--entrada-emg).
+18.000 tokens. Vea [Entrada EMG](#4--entrada-emg).
 
-### 2 · Parámetros de decodificación
+### 2 · El razonamiento, y por qué hay que desactivarlo
+
+El botón junto a **Refresh** controla el canal de pensamiento del modelo. **Azul
+marino relleno = suprimido** (el valor por defecto). **Contorno ámbar =
+razonamiento permitido.** El ámbar es el estado que produce resultados confusos,
+así que es el que se dibuja para llamar la atención.
+
+Un modelo de razonamiento —cualquiera de la clase Qwen3— parte su respuesta en
+dos: el desarrollo va a un campo `reasoning_content` y la respuesta a `content`.
+En esta tarea ese arreglo falla de una forma concreta. Se le da al modelo una
+clasificación difícil y un techo de tokens; gasta el techo deliberando, y
+`content` llega **vacío**. La plataforma registra un fallo de parseo para un
+modelo que, en cierto sentido, seguía pensando.
+
+Cuando está suprimido se envían dos interruptores con la petición, porque existen
+dos convenciones y los runtimes no coinciden en cuál leen:
+
+| Se envía | Convención | Lo lee |
+|---|---|---|
+| `chat_template_kwargs: {"enable_thinking": false}` | Qwen3 | La plantilla de chat, antes de que el modelo vea nada |
+| `reasoning_effort: "none"` | OpenAI | La capa de inferencia del propio runtime |
+
+Cualquiera de los dos por sí solo deja un hueco. Juntos cubren ambas familias, y
+un runtime que no reconozca uno simplemente lo ignora.
+
+La plataforma además **lee el canal de razonamiento como respaldo**: si `content`
+viene vacío y `reasoning_content` no, la respuesta se toma de ahí y la ejecución
+registra por qué canal llegó. Eso es un rescate, no una solución: una ejecución
+cuya respuesta salió por el canal de razonamiento le está diciendo que la
+supresión no surtió efecto.
+
+Lo que realmente se pidió queda guardado por ejecución en `reasoning_mode`, de
+modo que un resultado nunca puede reatribuirse en silencio a la condición
+equivocada.
+
+### 3 · Parámetros de decodificación
 
 Controlan **cómo el modelo elige cada token**. Son la diferencia entre una
 medición y una anécdota.
@@ -133,13 +173,13 @@ medición y una anécdota.
 | **Temperature** | Aplana o agudiza la distribución de probabilidad antes de muestrear. `0` toma siempre el token más probable. | **Manténgalo en 0.** Esto es una tarea de control, no de redacción: hay una respuesta correcta y ningún valor en la variedad. Por encima de 0, repetir una ejecución puede dar otro comando, lo que vuelve irrepetible cualquier resultado aislado. La lectura se pone ámbar sobre 0 como advertencia. |
 | **Top-P** | Muestreo por núcleo: considera solo el conjunto más pequeño de tokens cuya probabilidad suma P. | A temperatura 0 no tiene efecto: la decodificación voraz lo ignora. Se deja en `1.00` para que no interactúe en silencio si usted sube la temperatura. |
 | **Top-K** | Considera solo los K tokens más probables. | Deshabilitado salvo que el runtime declare soporte. El mismo razonamiento que Top-P. |
-| **Max tokens** | Techo duro para la longitud de la respuesta. | `320`. La respuesta es un objeto JSON con hasta seis entradas de comando; por debajo de unos 200 se trunca a media llave. **Una respuesta truncada es indistinguible de una malformada en las métricas**, así que un valor muy bajo registra un error de presupuesto como fallo del modelo. |
+| **Max tokens** | Techo duro para la longitud de la respuesta. | `1024`. La respuesta es un objeto JSON con hasta seis entradas de comando; por debajo de unos 200 se trunca a media llave. **Una respuesta truncada es indistinguible de una malformada en las métricas**, así que un valor muy bajo registra un error de presupuesto como fallo del modelo. El techo es generoso a propósito: no cuesta nada cuando el modelo es breve, y un valor ajustado es lo primero que se rompe si queda el razonamiento encendido. |
 | **Seed** | Fija el generador aleatorio del muestreador. | `42`. Junto con temperatura 0 es lo que hace reproducible una ejecución. El determinismo es una propiedad del muestreador —no algo que se le pueda instruir a un modelo— y por eso el prompt ya no lo pide. |
 | **Freq. penalty** | Penaliza tokens ya usados, según su frecuencia. | `0`. Está pensado para que la prosa no se repita. Un comando puede repetir legítimamente una letra (`A320,B180`), así que cualquier penalización aquí distorsiona la salida. |
 | **Presence penalty** | Penaliza tokens ya usados, sin más. | `0`, por la misma razón. |
-| **Response format** | Pide al runtime que restrinja la decodificación. | `json_schema`. El esquema de respuesta viaja con la petición, de modo que el runtime **no puede emitir** JSON malformado. Esto elimina el mayor modo de fallo —prosa envolviendo la respuesta— antes de que ocurra, en vez de detectarlo después. LM Studio rechaza `json_object`; la plataforma eleva esa petición automáticamente. |
+| **Response format** | Pide al runtime que restrinja la decodificación. | `json_object`, **elevado a `json_schema`** para LM Studio, que rechaza la forma simple `json_object`. Con un esquema adjunto el runtime **no puede emitir** JSON malformado, lo que elimina el mayor modo de fallo —prosa envolviendo la respuesta— antes de que ocurra en vez de detectarlo después. La elevación es deliberada: degradar a texto libre habría regalado esa garantía en silencio. |
 
-### 3 · Entrada EMG
+### 4 · Entrada EMG
 
 El estímulo es una matriz: **N filas × 8 columnas**, en crudo, sin procesar.
 
@@ -175,13 +215,21 @@ flexor_ratio = RMS flexor / (RMS flexor + RMS extensor)
   todos los canales cerca del piso  → reposo, sin acción
 ```
 
-**Tres maneras de cargar una ventana:**
+**Cuatro acciones, cada una un cuarto de la fila:**
 
+- **Paste matrix** — filas pegadas directamente: CSV, TSV, espacios o JSON.
 - **Import CSV** — su archivo de adquisición. Se detecta y omite una fila de
   cabecera (`CH0…CH7` o `CH1…CH8`); se elimina el BOM UTF-8.
-- **Paste matrix** — CSV, TSV, espacios o JSON.
-- **Load labelled synthetic window** — señales generadas con respuesta correcta
-  conocida, para probar la plataforma y no el modelo.
+- **Copy CSV** — la ventana cargada de vuelta hacia fuera, para el cuaderno de
+  laboratorio o una segunda herramienta.
+- **Clear** — descarta la ventana.
+
+El selector de ventana sintética estaba antes en primer lugar de esta fila.
+Cargaba señales generadas con respuesta conocida, útil para probar la plataforma
+pero que no es adquisición, y estando primero se leía como la vía principal de
+entrada. **Una ejecución contra EMG sintetizado no es evidencia sobre un modelo.**
+El generador sigue disponible en `GET /api/v1/emg/synthetic` para quien quiera
+comprobar la pipeline misma.
 
 **Rows sent** limita cuánta matriz llega al prompt. Déjelo vacío para enviarlo
 todo, que es el valor por defecto y la opción honesta. Dos cosas que conviene
@@ -198,7 +246,7 @@ Pulse **Apply** para confirmar el número. Un campo numérico dispara en cada
 pulsación, así que escribir "128" pediría brevemente 1 fila y luego 12; el botón
 le da al valor un momento inequívoco para tomar efecto.
 
-### 4 · Qué lleva el prompt dinámico
+### 5 · Qué lleva el prompt dinámico
 
 Tres opciones mutuamente excluyentes, y una variable experimental de verdad, no
 una preferencia de visualización.
@@ -209,6 +257,10 @@ una preferencia de visualización.
 | **Features** | RMS, MAV, ZC, SSC, WL, mín, máx por canal y la razón flexora | *¿Puede un LLM actuar sobre características extraídas?* Una tarea mucho más fácil: el procesamiento de señal ya está hecho. |
 | **Both** | La matriz y después los descriptores | La mayor cantidad de información que se le puede dar al modelo. |
 
+Los tres botones se aplican **al instante**: el bloque dinámico y el presupuesto
+de tokens se vuelven a renderizar al pulsarlos, así que usted puede ver lo que
+cuesta cada condición antes de comprometer una ejecución.
+
 Los descriptores se calculan siempre sobre la ventana **completa**, incluso
 cuando la matriz impresa está limitada: un resumen del extracto describiría algo
 que usted nunca eligió analizar.
@@ -217,7 +269,7 @@ que usted nunca eligió analizar.
 descriptores tiene tamaño fijo sea cual sea la longitud del registro: una
 ventana de 4.000 muestras cuesta lo mismo que una de 32.
 
-### 5 · Comando serial esperado
+### 6 · Comando serial esperado
 
 El comando que un experto del dominio dice que esta ventana *debería* producir.
 Opcional.
@@ -235,14 +287,21 @@ puede distinguirlo.
 - Las ejecuciones sin comando esperado quedan fuera del denominador de
   precisión: "no comparado" y "comparado e incorrecto" son hechos distintos.
 
-### 6 · Los cuatro bloques del prompt
+### 7 · Los cuatro bloques del prompt
 
 | Bloque | Contiene | Editable |
 |---|---|---|
 | **1 · System** | Rol y disciplina de salida. Sin números, sin EMG. | Sí, versionado |
-| **2 · Technical Context** | La mano: actuadores, gestos, protocolo, seguridad. | Sí, versionado |
+| **2 · Technical Context** | La mano: actuadores y rangos, gestos preestablecidos, sintaxis de comando, envolvente de seguridad. | Sí, versionado |
 | **3 · EMG Knowledge** | El mapa de electrodos y cómo razonar sobre él. | Sí, versionado |
 | **4 · Dynamic** | El EMG de esta ejecución. | Solo la plantilla — el contenido se ensambla |
+
+**El bloque 2 no dice nada sobre Bluetooth.** Antes abría su sección de formato
+con "Bluetooth protocol / ASCII", que describía un enlace en el que el modelo no
+toma parte: no abre el socket, no elige los baudios, no ve el cable. Lo que
+necesita es la *sintaxis* del comando —letras mayúsculas, separadas por comas— y
+eso es lo que queda. El transporte vive en `app.domain.protocol` y en el enlace
+serie del navegador, donde algo puede actuar sobre él.
 
 Los bloques 1, 2 y 3 están **congelados**: los mismos bytes en cada ejecución.
 Editar cualquiera crea una versión nueva e inmutable, de modo que los resultados
@@ -266,6 +325,59 @@ dynamic unidos tal como los verá el modelo—. Las cuatro tarjetas desglosan el
 presupuesto por bloque; cuando el total no cabe, el consejo nombra un número de
 filas sobre el que usted puede actuar, en lugar de un número de tokens sobre el
 que no.
+
+---
+
+## Por qué el mismo modelo responde distinto en el chat de LM Studio
+
+Una sospecha recurrente y razonable: pega el prompt en el chat de LM Studio y el
+modelo cierra la mano; envía el prompt idéntico por esta plataforma y devuelve
+`no_action`. El mismo modelo, los mismos pesos, otra respuesta.
+
+Hay **cuatro** causas independientes, y se acumulan:
+
+| Causa | En el chat | Por la API |
+|---|---|---|
+| **Razonamiento** | Puede que lo haya apagado en la interfaz del chat | Hay que suprimirlo explícitamente — vea [§2](#2--el-razonamiento-y-por-qué-hay-que-desactivarlo) |
+| **Valores de decodificación** | temperature 0.8, top-p 0.95, top-k 40 — un preajuste *creativo* | temperature 0, top-p 1, voraz |
+| **Historial de conversación** | Cada turno anterior sigue en el contexto | Nada. Cada ejecución está sola |
+| **`response_format`** | No se aplica | Un esquema restringe la decodificación token a token |
+
+Ninguna de las cuatro es un error, y ninguna es la plataforma equivocándose. El
+chat es una *condición experimental distinta*: un muestreador más cálido con una
+conversación detrás. Si quiere la respuesta del chat, lo honesto es reproducir
+aquí las condiciones del chat y registrar que lo hizo.
+
+**Los ajustes de carga son otro eje y no pueden explicar una respuesta
+distinta.** El panel de *load* de LM Studio —GPU offload, longitud de contexto,
+caché KV— decide qué tan rápido corre el modelo y cuánto prompt cabe. Con GPU
+Offload en 0, 765 tokens pueden tardar cuatro minutos. Ese es un problema de
+latencia, no de respuesta: los mismos pesos en CPU y en GPU producen los mismos
+tokens.
+
+**La longitud de contexto, en cambio, sí cambia lo que el modelo lee.** Si el
+contexto de carga es 8192 y su prompt son 17.608 tokens, algo tiene que ceder — y
+una matriz truncada en silencio es un estímulo distinto del que usted eligió. Las
+tarjetas de presupuesto existen precisamente para detectar esto antes de gastar
+una ejecución en ello.
+
+### Timeouts y reintentos
+
+`LLM_REQUEST_TIMEOUT_S` vale **1800** por defecto (30 minutos). No es cautela
+sobre la red; es el costo observado de un modelo grande sin GPU offload, donde
+unos cientos de tokens pueden tardar minutos. Un timeout calibrado para una API
+alojada convierte una ejecución local lenta en un fallo registrado.
+
+**Los dos contadores de reintento están en cero** — el `num_retries` de LiteLLM y
+el `max_retries` del cliente OpenAI, que vale 2 por defecto y es fácil pasar por
+alto. Un experimento reintentado no es el experimento que usted pidió: gasta en
+silencio el triple de tiempo real y registra un solo resultado. Si una ejecución
+falla, eso *es* el hallazgo.
+
+Tenga en cuenta que `.env` manda por dos vías: Docker Compose lo lee para
+interpolar `${VAR}` *y* lo pasa dentro del contenedor. Un valor viejo ahí le gana
+al valor por defecto de la aplicación en ambas direcciones, lo cual conviene
+recordar cuando un ajuste parece no tomar efecto.
 
 ---
 
@@ -347,6 +459,72 @@ motores.
 
 ---
 
+## Probar un comando a mano
+
+La fila **Actuator state** del simulador tiene un campo de texto y un botón
+**Test**. Escriba `C`, pulse Test, vea cerrarse la mano.
+
+Esto existe para separar dos fallos que desde fuera se ven idénticos. Cuando una
+ejecución no produce movimiento, la causa está en **la respuesta del modelo** o en
+**la plomería**: validador, WebSocket, enlace serie, firmware. Todo paso de
+diagnóstico que empiece con una inferencia tiene el juicio del modelo de por
+medio; escribir un comando resuelve la pregunta en una sola acción sin él.
+
+**No** es un atajo alrededor de la validación. Un comando escrito pasa por las
+mismas siete etapas que la respuesta de un modelo. Dos definiciones de "seguro" se
+irían separando, y la garantía pasaría a ser la que casualmente se ejecutara — y a
+los topes mecánicos no les importa quién eligió el número. Un dedazo en un campo
+de texto puede destrozar un motorreductor exactamente igual que un mal modelo.
+
+Las formas aceptadas son las del propio protocolo: un gesto suelto (`C`, `P`, `S`)
+o posiciones (`A320,B240`). Las minúsculas se aceptan y se normalizan.
+
+Una sola línea de resultado distingue tres desenlaces que un simple "enviado"
+aplanaría:
+
+| Resultado | Significa |
+|---|---|
+| Un mensaje rosa | Rechazado por validación, con la redacción del propio validador: nombra el actuador, el valor y el perfil que lo rechazó |
+| `· no client` | Aceptado y publicado, pero ningún simulador estaba escuchando |
+| `· sim` / `· sim + hand` | Entregado, y a qué destinos |
+
+---
+
+## El registro de movimientos
+
+`/logs` — cada comando que movió la mano.
+
+Deliberadamente **no** es la misma lista que el historial de ejecuciones. Aquella
+registra qué *respondieron* los modelos; esta registra qué se *transmitió*, y las
+dos divergen en ambos sentidos:
+
+- Una postura que se resolvió no es una postura que se entregó. El enlace con la
+  prótesis puede estar cerrado, o caerse a mitad de sesión.
+- Comandos que ningún modelo produjo —pruebas manuales y reenvíos— mueven la mano
+  exactamente igual que la respuesta de un modelo, y de otro modo serían
+  movimientos sin ningún registro que los explique.
+
+**Dos columnas de destino, no una bandera de "entregado".** El simulador se dibuja
+desde el backend; el hardware se maneja desde el navegador. Cualquiera de los dos
+puede llegar mientras el otro no, y esa asimetría es precisamente lo que intenta
+diagnosticar quien lee este registro. La entrega a la prótesis la confirma el
+navegador en una llamada posterior en vez de asumirse al escribir la fila: un
+registro escrito por adelantado reclamaría la entrega de un comando que el enlace
+dejó caer.
+
+Filtre por origen, porque los tres tipos responden preguntas distintas:
+
+| Origen | Qué es |
+|---|---|
+| **Model** | La respuesta de un modelo, tras las siete etapas. Esto es evidencia. |
+| **Manual** | Escrito para probar el enlace o la mecánica. No es evidencia sobre un modelo. |
+| **Replay** | Un movimiento guardado reenviado. Movió la mano otra vez, así que se registra otra vez. |
+
+Los contadores de cabecera son sobre la página cargada, y así están rotulados.
+Llamar total al conteo de una página es como un dashboard empieza a mentir.
+
+---
+
 ## Leer el resultado
 
 **Las siete compuertas**, en el orden en que se ejecutan. La primera en rojo es
@@ -367,6 +545,31 @@ pasara.
 veces. Un `serial_command` de `A320` junto a `intent: "no_action"` es un modelo
 que se contradijo, y ejecutar cualquiera de las dos mitades sería ejecutar algo
 que nunca decidió de forma coherente.
+
+### `no_action` significa que la mano no se mueve
+
+Conviene decirlo aparte, porque fue un fallo real. Los modelos respondían
+`{"intent": "no_action", "serial_command": "S"}` — y `S` es STOP, un comando que
+*sí* hace algo.
+
+La causa estaba en el contrato, no en el modelo. `serial_command` era obligatorio
+para cualquier intención, así que un modelo que eligiera `no_action` tenía que
+poner *algo* ahí, y STOP era el gesto más mencionado del prompt. Llenó el campo
+como el esquema le indicaba.
+
+El arreglo fue por los dos lados:
+
+- **El esquema** hace `serial_command` opcional, pero solo para `no_action`.
+  Cualquier otra intención sigue exigiéndolo.
+- **La pipeline** cortocircuita: una inacción declarada con el comando vacío se
+  salta protocol, range, kinematic y safety —no hay nada que comprobar—, registra
+  las etapas como completadas, no resuelve postura, y pasa.
+- **El bloque 3** lo dice con palabras: *"no_action means the hand does not move.
+  It is never S, and never O."* Un modelo al que se le da una regla la sigue; una
+  regla simplemente omitida no es una regla.
+
+`no_action` con un comando adjunto sigue siendo un error, y sigue fallando en
+`consistency`, con un mensaje que dice qué hacer en su lugar.
 
 **Métricas que conviene entender:**
 
@@ -405,6 +608,41 @@ pueden sostener.
 **Export CSV** se descarga desde la API para que el archivo sea idéntico byte a
 byte al que la API produce, con todas las ejecuciones —fallos incluidos— y las
 condiciones que las produjeron.
+
+---
+
+## Configuraciones de prompt
+
+Cada ejecución apunta a la **combinación distinta de bloques congelados** que la
+produjo. Se deduplica al escribir, sobre
+`frozen_context_sha256 = SHA256(system ‖ technical ‖ EMG knowledge)`:
+
+- Trescientas ejecuciones bajo un mismo montaje dejan **una** fila de
+  configuración.
+- Cambie una palabra en un bloque y la siguiente ejecución archiva una **segunda**
+  fila.
+- Devuélvala a como estaba y se reutiliza la **primera**, actualizando su
+  `last_used_at`.
+
+Una configuración lleva la etiqueta que usted ve en la interfaz
+(`S1.0 · T1.1 · E1.1`), las tres versiones de bloque, y el texto congelado
+completo tal como estaba — para que un resultado siga siendo legible después de que
+los bloques hayan avanzado.
+
+Los resultados se desglosan **por modelo**, porque una configuración solo es
+comparable dentro de uno. Dos modelos bajo la misma configuración es una
+comparación; el mismo modelo bajo dos configuraciones es una comparación. Mezclar
+ambas cosas a la vez no responde ninguna de las dos.
+
+Esto es lo que vuelve el archivo interrogable y no solamente grande: *qué
+redacción produjo este número* tiene una respuesta que no depende de que alguien
+se acuerde.
+
+Los cuatro bloques salen en versión **1.0** y solo avanzan cuando alguien cambia
+el texto de forma deliberada. Los números llevaban antes la historia de
+desarrollo de la propia plataforma —un system prompt en 6.0.0 antes de haber
+corrido un solo experimento—, lo que hacía que la tabla de artefactos se leyera
+como si hubieran ocurrido cinco estudios previos. Esa historia pertenece a git.
 
 ---
 

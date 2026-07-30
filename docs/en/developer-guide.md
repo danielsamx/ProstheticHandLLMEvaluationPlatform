@@ -11,7 +11,7 @@ backend/
   app/
     domain/        The prosthesis, as code. No I/O, no framework imports.
     schemas/       Pydantic v2 contracts
-    prompts/       Three blocks + deterministic assembly
+    prompts/       Four blocks + deterministic assembly
     validation/    Seven-stage pipeline, pure functions over strings
     models/        SQLAlchemy 2 mappers (21 tables)
     db/            Engine and session factory

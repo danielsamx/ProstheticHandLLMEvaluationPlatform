@@ -49,7 +49,6 @@ A JSON command the prosthesis firmware could execute verbatim, for example:
 
 ```json
 {
-  "hand": "right",
   "intent": "gesture",
   "gesture": "C",
   "serial_command": "C",
@@ -59,6 +58,19 @@ A JSON command the prosthesis firmware could execute verbatim, for example:
 ```
 
 …which the simulator then renders as a closing hand.
+
+`hand` may still be present and is **ignored**. The EMG of a grasp is the same
+signal whichever hand produced it, so asking the model to name the side made it
+guess at something the recording cannot tell it — and a wrong guess used to fail a
+run that was otherwise correct.
+
+Declining to act is also a valid answer, and it looks like this:
+
+```json
+{ "intent": "no_action", "serial_command": "" }
+```
+
+**Empty, not `S`.** `S` is STOP, a command that does something.
 
 ---
 
@@ -149,17 +161,21 @@ validation stage — there is no slider to move a finger by hand, on purpose.
 ## 5. A complete run, start to finish
 
 1. **Pick a project** so the run is filed where you will look for it later.
-2. **Choose a provider and model** in *Model & decoding*.
+2. **Choose a provider and model** in *Model & decoding*, and confirm the thinking
+   button is navy — suppressed.
 3. **Set the decoding parameters.** Start at temperature 0 with a fixed seed.
-4. **Load an EMG window** — paste a matrix, import a CSV, or generate a labelled
-   synthetic one.
-5. *(Optional)* **Preview the prompt** in *Prompt blocks → 3 · Dynamic* to see
-   exactly what the model will receive.
-6. **Press Run Evaluation.**
-7. **Read the result**: validation trace, metrics, raw response.
-8. **Watch the simulator** — it moves only if validation passed.
-9. **Repeat with another model**, changing nothing else.
-10. **Export** when you have enough runs to analyse.
+4. **Load an EMG window** — paste a matrix or import a CSV.
+5. **Choose what the dynamic block carries** — Matrix, Features or Both — and check
+   the budget cards say it fits.
+6. *(Optional)* **Type the expected serial command**, so the run is scored rather
+   than merely validated.
+7. *(Optional)* **Preview the prompt** in *Prompt blocks → 4 · Dynamic*, or the full
+   prompt, to see exactly what the model will receive.
+8. **Press Run Evaluation.**
+9. **Read the result**: validation trace, metrics, raw response.
+10. **Watch the simulator** — it moves only if validation passed.
+11. **Repeat with another model**, changing nothing else.
+12. **Export** when you have enough runs to analyse.
 
 ---
 
@@ -235,6 +251,30 @@ are between models of similar size, or between configurations of one model.
 > support it. Sending it anyway would have it silently dropped, and the run would
 > look reproducible when it is not.
 
+### The thinking button — not a decoding parameter
+
+Beside **Refresh**, in the provider/model row rather than among the knobs above,
+because it is a property of *how the model is asked* rather than of how it samples.
+
+**Filled navy = thinking suppressed** (the default). **Amber outline = thinking
+allowed.** Amber is the state that produces confusing results, so it is the one
+drawn to catch your eye.
+
+A reasoning model — anything Qwen3-class — splits its reply: the working-out goes to
+a `reasoning_content` field, the answer to `content`. Given a hard classification and
+a token ceiling, it can spend the ceiling deliberating and leave `content` **empty**,
+and the platform records a parse failure for a model that was still thinking. This is
+the single most common reason a run "fails" for no visible reason.
+
+When suppressed, two switches are sent — `enable_thinking: false` (the Qwen3
+convention, read by the chat template) and `reasoning_effort: "none"` (the OpenAI
+spelling, read by the runtime). Runtimes disagree about which they honour, and one
+that does not recognise a switch simply ignores it.
+
+If a run's answer arrives on the reasoning channel anyway, the platform reads it as a
+fallback **and records which channel it came from**. Treat that as a signal that the
+suppression did not take, not as a success.
+
 ### Repetitions
 
 Set **Repetitions** above 1 to run the identical experiment several times. The
@@ -246,7 +286,7 @@ worth knowing before you trust a model in a control loop.
 
 ## 9. Prompts
 
-Every prompt sent to a model has three blocks, assembled by the backend:
+Every prompt sent to a model has **four** blocks, assembled by the backend:
 
 ```
 ┌────────────────────────┐
@@ -254,7 +294,9 @@ Every prompt sent to a model has three blocks, assembled by the backend:
 ├────────────────────────┤
 │ 2 · TECHNICAL CONTEXT  │  frozen — what the hardware is
 ├────────────────────────┤
-│ 3 · DYNAMIC PROMPT     │  varies — the EMG window
+│ 3 · EMG KNOWLEDGE      │  frozen — how to read the signal
+├────────────────────────┤
+│ 4 · DYNAMIC PROMPT     │  varies — the EMG window
 └────────────────────────┘
 ```
 
@@ -270,30 +312,81 @@ the hardware description.
 
 ### Block 2 — Technical context
 
-The prosthesis: commands, ranges, kinematics, protocol, safety rules, output
-schema. **Generated from the code**, not written by hand — so the limits the
+The prosthesis: actuators and their ranges, preset gestures, command syntax,
+safety rules. **Generated from the code**, not written by hand — so the limits the
 model is told about can never drift from the limits the validator enforces.
+
+**Nothing about Bluetooth.** It once opened with "Bluetooth protocol / ASCII",
+describing a link the model has no part in: it does not open the socket, choose the
+baud rate, or see the wire. The command *syntax* is what it needs, and that is what
+remains.
 
 Editing is allowed (a hand-written context is a legitimate experimental
 variable), and **Regenerate** always restores the canonical text.
 
-### Block 3 — Dynamic prompt
+### Block 3 — EMG knowledge
 
-Read-only. Press **Preview assembled prompt** to see exactly what will be sent,
-without spending a token.
+How to read the signal: the electrode map, which descriptors to weigh, and the
+conditions under which STOP is the right answer.
+
+Separate from block 2 on purpose. "What can this hand do?" changes only when the
+hardware changes; "is co-contraction a stop, or physiological coactivation?" is a
+methodological position you will revise repeatedly. Sharing one artefact would mean
+every experiment on the second question also reversioned the first, and no effect
+could be attributed to either.
+
+This block carries the correction that mattered most in practice. An earlier
+version said that near-equal flexor and extensor activity meant STOP — which is
+wrong physiologically, because a normal grasp recruits antagonists to stabilise the
+wrist, and it turned ordinary grasping into an emergency halt. STOP now requires
+four conditions together, and the third does the real work: **rule out every
+supported gesture first.**
+
+It also states what inaction means: *"no_action means the hand does not move. It is
+never S, and never O."* Without that line, models answering `no_action` filled the
+command field with `S` — STOP — because the schema demanded a command and STOP was
+the most-mentioned gesture in the prompt.
+
+### Block 4 — Dynamic prompt
+
+Read-only, and the only block that changes. Three buttons choose what it carries —
+**Matrix**, **Features**, **Both** — and they apply immediately, so the block and
+the token budget re-render as you press them.
+
+**Rows sent** caps how much of the matrix is printed; press **Apply** to commit the
+number. The cap decimates with a uniform stride rather than truncating, so the model
+sees the whole movement instead of the pre-movement baseline. Because the stride is
+a whole number, 64 on 404 rows yields 58 — and the panel reports what was actually
+sent, not what you asked for.
+
+### Reading the whole thing
+
+**Preview · count tokens** assembles the exact prompt without spending anything, and
+you can switch between the dynamic block alone and the **full prompt** — all four
+blocks joined as the model will see them.
+
+The budget cards break the total down by block. When it will not fit, the advice
+names a row count you can act on rather than a token count you cannot.
 
 ### Versioning
 
-Editing block 1 or 2 creates a **new version**; existing versions are never
-modified. A result published six months ago still resolves to the exact bytes
-that produced it.
+Editing blocks 1, 2 or 3 creates a **new version**; existing versions are never
+modified. A result published six months ago still resolves to the exact bytes that
+produced it. All four ship at version **1.0**.
 
-### The frozen context hash
+### Prompt configurations
 
-Under the preview you will find `frozen_context_sha256`. Two runs sharing that
-value saw identical constants and are directly comparable. When they differ, the
-comparison endpoint flags the set as **not comparable** rather than presenting a
+The three frozen blocks together are hashed into `frozen_context_sha256`, and every
+execution points at the **distinct configuration** that digest identifies. They are
+deduplicated: three hundred runs under one setup leave one row, changing a block
+files a second, and changing it back reuses the first.
+
+Two runs under the same configuration are directly comparable. When a set spans
+more than one, the platform reports **not comparable** rather than presenting a
 ranking it cannot support.
+
+The configurations table breaks results down **per model**, because a configuration
+is only comparable within one.
 
 ---
 
@@ -303,7 +396,7 @@ The input is a **raw sample matrix**:
 
 ```
 N rows (time steps, ascending) × 8 columns (CH1…CH8)
-amplitudes normalised to [-1.0, 1.0]
+raw converter output — nothing is filtered, rectified, normalised or scaled
 ```
 
 Read *across* a row for one instant in time; read *down* a column to follow one
@@ -315,44 +408,45 @@ electrode. A 200×8 window at 1 kHz is 200 ms of signal.
 | CH5–CH7 | Extensors (dorsal forearm) | Opening |
 | CH8 | Brachioradialis | Postural |
 
-### Three ways to load one
+### Loading one
 
-**Paste or import.** CSV, TSV, whitespace or JSON. A header line is ignored,
-whether it reads `CH0…CH7` or `CH1…CH8`.
+**Paste matrix.** Rows pasted directly: CSV, TSV, whitespace or JSON. A header line
+is ignored, whether it reads `CH0…CH7` or `CH1…CH8`.
 
-**Synthesise.** Pick a gesture from the dropdown. The window is generated with a
-known ground truth, so accuracy is scored automatically. Seeded, therefore
-replayable across every model.
+**Import CSV.** Your acquisition file. Same header handling; a UTF-8 BOM is
+stripped.
+
+**Copy CSV / Clear.** The loaded window back out, or discarded.
 
 **Stream live.** Switch **Live acquisition** on; the acquisition hardware pushes
 windows over a WebSocket. With **Auto-run each frame**, every frame fires a full
 execution.
 
-### Amplitude scaling — read this
+The synthetic-window picker used to sit first in this row. It generated signals with
+a known ground truth, which is useful for testing the platform, but a run against
+synthesised EMG is not evidence about a model — and sitting first, it read as the
+primary way in. The generator is still available at `GET /api/v1/emg/synthetic` for
+checking the pipeline itself.
 
-Acquisition hardware produces converter counts, not normalised values, so the
-import step has to rescale them. How it does that matters:
+### No amplitude scaling — read this
 
-| Mode | What it does | When |
-|---|---|---|
-| **Declared full scale** | Divides by the converter's range | **Default.** Use this. |
-| **Already −1…1** | Rejects anything outside range | Data already normalised |
-| **Per-window peak** | Divides by this window's own maximum | Almost never |
+**Values pass through unchanged.** There is no normalisation setting, no declared
+full scale, no divisor. Nothing between the electrode and the prompt rescales
+anything.
 
-> **Why peak scaling is dangerous.** It normalises each window by its own
-> maximum, so a resting window and a maximal grasp both come out peaking at 1.0.
-> The amplitude difference between them — the thing this platform compares — is
-> destroyed. The interface warns you whenever it is selected.
+This is deliberate and it is the whole point of the measurement: what the model is
+judged on is what the hardware produced. An earlier version of the platform divided
+by a declared converter range, which meant every comparison depended on a number
+typed by hand — and a wrong one silently made recordings incomparable while
+everything still looked fine.
 
-Set **Full scale** to your hardware's actual converter range (512 for a 10-bit
-signed ADC, 2048 for 12-bit). If you leave it blank the value is inferred from
-the window and flagged, because an inferred divisor differs between recordings
-and makes them incomparable.
+The interface reports `observed_peak` so you can see the signal's range. Nothing
+acts on it.
 
-**Check the aggregate reading.** The technical context tells the model that a
-mean RMS below 0.10 means rest. If your recording of a movement reports mean RMS
-0.03, the declared full scale is too large and the model is being told "rest"
-about a window of activity.
+**What survives the lack of scaling** is the quantity that was always the right one
+to reason about: the **balance between muscle groups**. Gain, electrode placement
+and subject all shift the absolute scale; the ratio survives all three, which is why
+block 3 tells the model to weigh the pattern rather than any single threshold.
 
 ### The traces
 
@@ -406,7 +500,7 @@ Navy = passed, pink = the stage that rejected it, grey = never reached.
 | Stage | Rejects |
 |---|---|
 | **parse** | Not JSON. Prose, apologies, code fences. |
-| **schema** | Missing or extra fields, wrong hand, unknown channel |
+| **schema** | Missing or extra fields, unknown channel. `serial_command` may be empty **only** for `no_action` |
 | **protocol** | Malformed serial frame, invented command letter |
 | **consistency** | `serial_command` disagreeing with the structured fields |
 | **range** | A position outside the mechanical limits |
@@ -416,10 +510,19 @@ Navy = passed, pink = the stage that rejected it, grey = never reached.
 This is the diagnostic view. "Model B fails 30% of the time" is not actionable;
 "model B fails at `parse` because it prefixes JSON with an explanation" is.
 
+A declared inaction with an empty command short-circuits the last five stages —
+there is nothing to check — and passes. It is a legitimate answer, recorded as
+`refused_to_act` rather than as a failure.
+
 ### Metrics
 
 Latency, tokens, cost, throughput, intent, detected pattern, confidence, and —
-when the window is labelled — whether the gesture was correct.
+when you supplied an expected serial command — **Match**: ✓, ✗, or – for a run that
+was never labelled.
+
+Read **Match** and pass rate together. Passing validation only means the command
+was well formed, in range and safe; a model that answers `O` to every window scores
+100% on validation and 0% on control.
 
 ### Determinism
 
@@ -439,7 +542,45 @@ The **Configurations & execution history** section lists recent runs: model,
 time, latency, and either the serial command or the failing stage.
 
 **Replay** re-renders a stored movement in the simulator. Only executions that
-passed validation have a movement, so replay can never resurrect an unsafe pose.
+passed validation have a movement, so replay can never resurrect an unsafe pose. A
+replay is logged like anything else that moved the hand.
+
+### Testing a command by hand
+
+The **Actuator state** row in the simulator has a text field and a **Test** button.
+Type `C`, press Test, watch the hand close.
+
+This separates two failures that look identical from the outside. When a run produces
+no movement, the cause is either the model's answer or the plumbing — validator,
+WebSocket, serial link, firmware. Every diagnostic that starts with an inference has
+the model's judgement in the way; typing a command settles it without one.
+
+It is **not** a shortcut around validation: a typed command goes through the same
+seven stages. The mechanical stops do not care who chose the number, and a typo in a
+text field can strip a gearmotor exactly as well as a bad model can.
+
+A rejected command shows the validator's own message, which already names the
+actuator, the value and the profile that refused it. `· no client` means accepted but
+nothing was listening — a different outcome from rejection.
+
+### The movement log
+
+`/logs` — every command that moved the hand, which is **not** the same list as the
+execution history. That records what models *answered*; this records what was
+*transmitted*.
+
+The two diverge in both directions. A pose that resolved is not a pose that was
+delivered — the prosthesis link can be closed or drop mid-session. And commands no
+model produced (manual tests, replays) move the hand exactly as a model's answer
+does, and would otherwise be movements with no record explaining them.
+
+Two destination columns rather than one "delivered" flag, because the simulator
+renders from the backend while the hardware is driven from the browser: either can
+arrive while the other does not, and that asymmetry is what you are usually trying to
+diagnose.
+
+Filter by origin — **Model** is evidence, **Manual** is a check on the plumbing,
+**Replay** is neither.
 
 ---
 
@@ -538,17 +679,45 @@ development the backend accepts loopback and private ranges on any port.
 Reload the page after a backend restart. If it stays empty, load a model in LM
 Studio and press **Import loaded models**.
 
-### Every response fails at `parse`
+### Every response fails at `parse`, or the response is empty
 
-The model is writing prose around the JSON. Try:
+**Check the thinking button first.** An empty `content` from a reasoning model is by
+far the most common cause, and it looks exactly like a malformed reply in the
+metrics. Suppress thinking and run it again before changing anything else.
+
+If the response is prose wrapped around the JSON instead:
 
 1. Set **Response format** to `json_object` or `json_schema`.
 2. Set temperature to 0.
 3. Try a model with better instruction-following — small quantised models often
    cannot suppress a preamble.
 
-This is a legitimate finding, not just a nuisance: it is the model failing the
-task.
+Prose around the answer is a legitimate finding, not just a nuisance: it is the model
+failing the task. An empty answer from an unsuppressed reasoning model is not — that
+is a configuration problem, and recording it as the model's failure would be wrong.
+
+### The model answers `no_action` when the EMG clearly shows a movement
+
+Three things to check, in this order:
+
+1. **Thinking suppressed?** See above.
+2. **Does the prompt fit?** If LM Studio's *load* context is 8192 and the budget
+   cards say 17,608 tokens, the matrix is being truncated and the model is reading a
+   different stimulus from the one you chose. Switch to **Features**, or raise the
+   load context, or cap the rows deliberately.
+3. **Are you comparing against LM Studio's chat?** The chat runs at temperature 0.8
+   with top-p 0.95 and your conversation history in context. It is a different
+   experimental condition, not a second opinion.
+
+`no_action` paired with a command — `{"intent": "no_action", "serial_command": "S"}` —
+is a different matter and now fails at `consistency`. `S` is STOP, which *does*
+something; inaction means the field is empty.
+
+### Every response fails at `range`
+
+The model is emitting positions outside the mechanical limits. Check which limit
+profile is active — the same command can be legal under `TABLE_5_V3` and illegal
+under `ANNEX_A_V3`, because the manual publishes two different envelopes.
 
 ### Every response fails at `range`
 
@@ -562,15 +731,27 @@ The runtime is not honouring the seed. Common with GGUF backends. Check the
 execution record for **dropped parameters** — it lists exactly what the runtime
 ignored.
 
-### A movement window reads as "rest"
+### The run times out
 
-The declared full scale is too large for your hardware. See
-[Amplitude scaling](#10-the-emg-stimulus).
+`LLM_REQUEST_TIMEOUT_S` defaults to 1800 seconds, which is generous on purpose: a
+large model with **GPU Offload at 0** can take minutes for a few hundred tokens. If
+you see a timeout well under that number, an old value in `.env` is overriding the
+default — Compose reads that file for interpolation *and* passes it into the
+container, so a stale line there wins twice.
+
+Both retry counters are zero by design. A silently retried experiment spends three
+times the wall clock and records one result.
 
 ### The simulator does not move
 
-Correct behaviour when validation failed. Read the banner: it names the stage and
-the reason.
+First, distinguish the two cases:
+
+- **A banner naming a stage** — validation failed, and this is correct behaviour. The
+  banner names the stage and the reason.
+- **No banner, nothing happens** — the plumbing, not the model. Type `C` into the
+  **Test** field in the Actuator state row. If the hand moves, the transport is fine
+  and the problem is upstream; if it does not, check the movement log at `/logs` to
+  see whether the command was even recorded as published.
 
 ### The hand-switch is slow the first time
 
@@ -593,10 +774,11 @@ The second rig is built on first use. Subsequent switches are instant.
 ### For a trustworthy record
 
 - Write the **research question** on the project. Your future self will need it.
-- Use **labelled windows** where you can — accuracy is then scored without
-  manual annotation.
-- **Declare the full scale.** An inferred one is not comparable across
-  recordings.
+- **Supply the expected serial command.** Without an answer key, a model that
+  replies `O` to every window scores 100% on validation and 0% on control, and
+  nothing in the record can tell the difference.
+- **Keep the thinking button in one state** across a comparison, and note which. It
+  changes which channel the answer arrives on, which is not a small difference.
 - **Do not delete failed runs.** They are the most informative rows in the file.
 
 ### For a meaningful evaluation

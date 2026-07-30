@@ -11,7 +11,7 @@ backend/
   app/
     domain/        La prótesis, como código. Sin E/S, sin imports de framework.
     schemas/       Contratos Pydantic v2
-    prompts/       Tres bloques y ensamblado determinista
+    prompts/       Cuatro bloques y ensamblado determinista
     validation/    Pipeline de siete etapas, funciones puras sobre cadenas
     models/        Mapeadores SQLAlchemy 2 (21 tablas)
     db/            Motor y factoría de sesiones

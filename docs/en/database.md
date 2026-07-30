@@ -44,8 +44,12 @@ users
 
 emg_windows ──< executions          system_prompt_versions ──< executions
 emg_stream_sessions                 technical_context_versions ──< executions
+                                    emg_context_versions ──< executions
                                     dynamic_prompt_templates ──< executions
+                                    prompt_configurations ──< executions
                                     lab_presets
+
+movement_log >── executions (nullable: manual commands have no execution)
 ```
 
 ---
@@ -86,23 +90,72 @@ silently.
 A named, reusable decoding configuration. Saved once and replayed across models,
 which is what keeps a comparison controlled.
 
+Carries `disable_reasoning` (boolean, default **true**) alongside the decoding
+knobs, even though suppressing the thinking channel is not decoding. It belongs
+here because it is a property of *how the model is asked*, and because leaving it
+out of the reusable bundle would let two runs of "the same configuration" differ on
+the one setting most likely to empty a response.
+
 ### Versioned prompt artefacts
 
-`system_prompt_versions`, `technical_context_versions`, `dynamic_prompt_templates`
+`system_prompt_versions`, `technical_context_versions`, `emg_context_versions`,
+`dynamic_prompt_templates`
 
 Shared shape: `name`, `version`, `content`, `content_sha256`, `is_active`,
 `is_system_default`. Unique on `(name, version)`.
 
 **Immutable.** Editing in the UI inserts a new row. Where the generated text
-drifts without a version bump, the seed files it under `2.0.0+<sha8>` rather than
-overwriting.
+drifts without a version bump, the seed files it under a suffixed version rather
+than overwriting.
+
+All four artefacts ship at version **1.0**. The numbers previously carried the
+platform's own development history — a system prompt at 6.0.0 before a single
+experiment had been run — which made this table read as though five earlier studies
+had happened.
 
 `technical_context_versions.limit_profile` records which mechanical envelope the
 text describes, so a context can never be paired with a validator that
 contradicts it.
 
+`is_system_default` is load-bearing beyond bookkeeping: it is how the assembler
+knows whether a stored template should override the dynamic-content mode. A flag
+survives every rewording of the text; comparing the text itself only works until
+the next edit.
+
+#### `prompt_configurations`
+One row per **distinct combination** of the three frozen blocks, unique on
+`frozen_context_sha256`.
+
+Deduplicated at write time: three hundred runs under one setup leave one row,
+changing a block files a second, and returning to the first reuses it and touches
+`last_used_at`. Carries `label` (`S1.0 · T1.1 · E1.1`), the three version foreign
+keys **and** the version strings copied in, plus `frozen_context_text`.
+
+The strings are copied rather than only referenced on purpose. The foreign keys are
+`ON DELETE SET NULL`; if an artefact row is ever removed, the configuration still
+knows which wording it stood for.
+
+#### `movement_log`
+Every command that reached the simulator, the prosthesis, or both.
+
+Deliberately not derivable from `simulator_movements`: that table records poses the
+platform *resolved*, this one records what was *transmitted*, and the two diverge
+in both directions.
+
+`source` is `execution`, `manual` or `replay`. `execution_id` is nullable, because
+a typed command has no execution behind it.
+
+`sent_to_simulator` and `sent_to_prosthesis` are **two independent booleans**, not
+one `delivered` flag. The simulator renders from the backend and the hardware is
+driven from the browser, so either can arrive while the other does not — and that
+asymmetry is the whole diagnostic value of the table. `transport` (`serial` | `ble`)
+and `delivery_error` record how, or why not.
+
+Rows are written **after** the attempt, so the flags record what happened rather
+than what was intended.
+
 #### `lab_presets`
-One-click bundle: configuration + three prompt versions + hand + limit profile.
+One-click bundle: configuration + the prompt versions + hand + limit profile.
 
 ### Stimulus
 
@@ -132,9 +185,27 @@ One independent inference. The central table.
 `triggered_by_id`, `triggered_by_email`
 
 **The exact prompt sent** — `system_prompt_text`, `technical_context_text`,
-`dynamic_prompt_text`, `messages_json`, plus five SHA-256 digests. Stored
-verbatim, not reconstructed: a result survives later editing or deletion of the
-rows it referenced.
+`emg_context_text`, `dynamic_prompt_text`, `messages_json`, plus six SHA-256
+digests (`…_sha256` per block, `frozen_context_sha256`, `full_prompt_sha256`).
+Stored verbatim, not reconstructed: a result survives later editing or deletion of
+the rows it referenced.
+
+`frozen_context_sha256 = SHA256(system ‖ technical ‖ emg_context)` is the
+comparability key. Two executions with the same digest were asked the same way;
+two with different digests are different experiments, whatever else they share.
+
+**The stimulus condition** — `dynamic_content` (`matrix` | `features` | `both`) and
+`matrix_rows_sent`. The second records what was *rendered*, not what was
+*requested*: a row cap decimates with a whole-number stride, so 64 on 404 rows
+yields 58, and storing the request would misdescribe the stimulus.
+
+**The answer key** — `expected_serial_command`, nullable. Supplied by the
+researcher, compared against the normalised command, never placed in a prompt. Null
+means "not compared", which is a different fact from "compared and wrong" and is
+excluded from the accuracy denominator rather than counted as a miss.
+
+**The prompt configuration** — `prompt_configuration_id`, pointing at the
+deduplicated frozen setup this run belongs to.
 
 **Model and endpoint** — `litellm_model`, `provider_slug`, `model_key`,
 `api_base`, `api_flavour`, `model_snapshot`
@@ -143,6 +214,12 @@ rows it referenced.
 `top_k`, `max_tokens`, `seed`, `frequency_penalty`, `presence_penalty`,
 `stop_sequences`, `response_format`, `reasoning_mode`, `custom_parameters`.
 Duplicated from `model_snapshot` so a parameter sweep is a plain SQL aggregate.
+
+`reasoning_mode` lives **here**, on the execution, not on
+`sampling_configurations` — which carries the boolean `disable_reasoning`. The
+distinction matters: the configuration holds the *intent*, the execution holds what
+was actually sent. Editing a configuration afterwards must not be able to
+retroactively change the condition a past result is attributed to.
 
 **`dropped_parameters`** — knobs the runtime silently ignored. Without this a run
 looks reproducible when it is not.
@@ -279,10 +356,19 @@ ORDER BY created_at DESC;
 | `0001_initial` | Seventeen tables: the core experimental record |
 | `0002_emg_matrix` | Stimulus becomes a raw N×8 matrix; features derived, not supplied |
 | `0003_governance` | Projects, audit, attachments, execution logs, request metadata |
+| `0004_json_contract` | The response becomes one JSON object; per-block digests |
+| `0005_expected_command` | `expected_serial_command`, `dynamic_content`, `matrix_rows_sent` |
+| `0006_emg_context_block` | `emg_context_versions` and the fourth block on executions |
+| `0007_prompt_configurations` | `prompt_configurations`, deduplicated on the frozen digest |
+| `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
 
 `0002` deletes existing windows and executions. A feature vector does not
 determine the waveform it came from, so back-filling a synthetic matrix would
 have produced fabricated data indistinguishable from recorded data.
+
+`0007` back-fills a configuration row for each distinct `frozen_context_sha256`
+already present and points existing executions at it, so the history is not split
+into "runs with a configuration" and "runs from before".
 
 ```bash
 alembic upgrade head

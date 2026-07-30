@@ -21,7 +21,7 @@ structurally rather than by convention:
 
 | Mechanism | Guarantee |
 |---|---|
-| Three-block prompt, first two frozen | Only the EMG payload varies between runs |
+| Four-block prompt, first three frozen | Only the EMG payload varies between runs |
 | `frozen_context_sha256` on every execution | Two runs are provably comparable, or provably not |
 | Immutable prompt versions | Any published result reproduces byte for byte |
 | Hardware spec compiled into code | No RAG variance, no retrieval drift, no PDF at runtime |
@@ -78,7 +78,9 @@ Full detail: [hardware specification](hardware.md).
 ├────────────────────────┤
 │ 2 · TECHNICAL CONTEXT  │  frozen · generated from the domain model
 ├────────────────────────┤
-│ 3 · DYNAMIC PROMPT     │  varies · EMG matrix + derived features
+│ 3 · EMG KNOWLEDGE      │  frozen · electrode map and how to read it
+├────────────────────────┤
+│ 4 · DYNAMIC PROMPT     │  varies · EMG matrix and/or derived features
 └────────────────────────┘
             ↓  LiteLLM  ↓
         JSON response
@@ -87,8 +89,14 @@ Full detail: [hardware specification](hardware.md).
 The researcher never assembles this. `build_prompt()` does it before every
 inference and returns SHA-256 digests of each block.
 
-Block 2 is **generated from `app/domain/`**, not transcribed — so the limits the
-model is told about can never drift from the limits the validator enforces.
+Blocks 2 and 3 are **generated from `app/domain/`**, not transcribed — so the
+limits the model is told about can never drift from the limits the validator
+enforces, and the electrode map in the prompt is the one the feature extractor
+groups by.
+
+The three frozen blocks hash together into `frozen_context_sha256`, which is both
+the comparability key and the identity of a **prompt configuration**: distinct
+setups are deduplicated, and every execution points at the one that produced it.
 
 ---
 
@@ -96,7 +104,7 @@ model is told about can never drift from the limits the validator enforces.
 
 ```
 N rows (time steps, ascending) × 8 columns (CH1…CH8)
-amplitudes normalised to [-1.0, 1.0]
+raw converter output — no filtering, rectification, normalisation or scaling
 ```
 
 Features (`rms`, `mav`, `zc`, `ssc`, `wl`, `min`, `max`, `variance`) are

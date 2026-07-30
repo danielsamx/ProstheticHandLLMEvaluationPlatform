@@ -33,7 +33,7 @@ frame that the interface displays *without* moving the hand.
 |---|---|---|
 | Domain | `app/domain` | The prosthesis, as code. No I/O, no framework imports. |
 | Contracts | `app/schemas` | Pydantic v2 models: LLM output, EMG, HTTP payloads |
-| Prompts | `app/prompts` | Three blocks and deterministic assembly |
+| Prompts | `app/prompts` | Four blocks and deterministic assembly |
 | Validation | `app/validation` | Seven-stage pipeline, pure functions over strings |
 | Persistence | `app/models`, `app/db` | SQLAlchemy 2 mappers, async session |
 | Services | `app/services` | LiteLLM, orchestrator, metrics, EMG, audit, export |

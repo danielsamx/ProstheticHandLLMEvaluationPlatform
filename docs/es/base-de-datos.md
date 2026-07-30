@@ -46,8 +46,12 @@ users
 
 emg_windows ──< executions          system_prompt_versions ──< executions
 emg_stream_sessions                 technical_context_versions ──< executions
+                                    emg_context_versions ──< executions
                                     dynamic_prompt_templates ──< executions
+                                    prompt_configurations ──< executions
                                     lab_presets
+
+movement_log >── executions (nulable: los comandos manuales no tienen ejecución)
 ```
 
 ---
@@ -89,23 +93,73 @@ Una configuración de decodificación con nombre y reutilizable. Se guarda una v
 y se reproduce en todos los modelos, que es lo que mantiene controlada una
 comparación.
 
+Lleva `disable_reasoning` (booleano, **true** por defecto) junto a los mandos de
+decodificación, aunque suprimir el canal de pensamiento no sea decodificación. Está
+aquí porque es una propiedad de *cómo se le pregunta al modelo*, y porque dejarlo
+fuera del paquete reutilizable permitiría que dos ejecuciones de "la misma
+configuración" difirieran en el único ajuste con más probabilidad de vaciar una
+respuesta.
+
 ### Artefactos de prompt versionados
 
-`system_prompt_versions`, `technical_context_versions`, `dynamic_prompt_templates`
+`system_prompt_versions`, `technical_context_versions`, `emg_context_versions`,
+`dynamic_prompt_templates`
 
 Forma común: `name`, `version`, `content`, `content_sha256`, `is_active`,
 `is_system_default`. Únicos por `(name, version)`.
 
 **Inmutables.** Editar en la interfaz inserta una fila nueva. Cuando el texto
-generado cambia sin subir de versión, el seed lo archiva bajo `2.0.0+<sha8>` en
-lugar de sobrescribir.
+generado cambia sin subir de versión, el seed lo archiva bajo una versión con
+sufijo en lugar de sobrescribir.
+
+Los cuatro artefactos salen en versión **1.0**. Los números llevaban antes la
+historia de desarrollo de la propia plataforma —un system prompt en 6.0.0 antes de
+haber corrido un solo experimento—, lo que hacía que esta tabla se leyera como si
+hubieran ocurrido cinco estudios previos.
 
 `technical_context_versions.limit_profile` registra qué envolvente mecánica
 describe el texto, de modo que un contexto nunca puede emparejarse con un
 validador que lo contradiga.
 
+`is_system_default` sostiene más que la contabilidad: es cómo el ensamblador sabe
+si una plantilla guardada debe imponerse sobre el modo de contenido dinámico. Una
+bandera sobrevive a cualquier reescritura del texto; comparar el texto mismo
+funciona solo hasta la siguiente edición.
+
+#### `prompt_configurations`
+Una fila por cada **combinación distinta** de los tres bloques congelados, única por
+`frozen_context_sha256`.
+
+Se deduplica al escribir: trescientas ejecuciones bajo un montaje dejan una fila,
+cambiar un bloque archiva una segunda, y volver a la primera la reutiliza y
+actualiza `last_used_at`. Lleva `label` (`S1.0 · T1.1 · E1.1`), las tres claves
+ajenas de versión **y** las cadenas de versión copiadas, más `frozen_context_text`.
+
+Las cadenas se copian en vez de solo referenciarse a propósito. Las claves ajenas
+son `ON DELETE SET NULL`; si alguna vez se elimina una fila de artefacto, la
+configuración sigue sabiendo qué redacción representaba.
+
+#### `movement_log`
+Cada comando que llegó al simulador, a la prótesis, o a ambos.
+
+Deliberadamente no derivable de `simulator_movements`: esa tabla registra poses que
+la plataforma *resolvió*, esta registra qué se *transmitió*, y las dos divergen en
+ambos sentidos.
+
+`source` es `execution`, `manual` o `replay`. `execution_id` es nulable, porque un
+comando escrito a mano no tiene una ejecución detrás.
+
+`sent_to_simulator` y `sent_to_prosthesis` son **dos booleanos independientes**, no
+una bandera `delivered`. El simulador se dibuja desde el backend y el hardware se
+maneja desde el navegador, así que cualquiera de los dos puede llegar mientras el
+otro no — y esa asimetría es todo el valor diagnóstico de la tabla. `transport`
+(`serial` | `ble`) y `delivery_error` registran cómo, o por qué no.
+
+Las filas se escriben **después** del intento, así que las banderas registran lo
+que pasó y no lo que se pretendía.
+
 #### `lab_presets`
-Paquete de un clic: configuración + tres versiones de prompt + mano + perfil de
+Paquete de un clic: configuración + las versiones de prompt + mano + perfil de
 límites.
 
 ### Estímulo
@@ -137,9 +191,28 @@ Una inferencia independiente. La tabla central.
 `triggered_by_id`, `triggered_by_email`
 
 **El prompt exacto enviado** — `system_prompt_text`, `technical_context_text`,
-`dynamic_prompt_text`, `messages_json` y cinco digests SHA-256. Se guarda
-literal, no se reconstruye: así el resultado sobrevive a la edición o el borrado
-posterior de las filas a las que apuntaba.
+`emg_context_text`, `dynamic_prompt_text`, `messages_json` y seis digests SHA-256
+(un `…_sha256` por bloque, `frozen_context_sha256`, `full_prompt_sha256`). Se
+guarda literal, no se reconstruye: así el resultado sobrevive a la edición o el
+borrado posterior de las filas a las que apuntaba.
+
+`frozen_context_sha256 = SHA256(system ‖ technical ‖ emg_context)` es la clave de
+comparabilidad. Dos ejecuciones con el mismo digest se preguntaron igual; dos con
+digests distintos son experimentos distintos, por más que compartan lo demás.
+
+**La condición del estímulo** — `dynamic_content` (`matrix` | `features` | `both`)
+y `matrix_rows_sent`. El segundo registra lo que se *renderizó*, no lo que se
+*pidió*: un tope de filas diezma con paso entero, así que 64 sobre 404 filas da 58,
+y guardar la petición describiría mal el estímulo.
+
+**La hoja de respuestas** — `expected_serial_command`, nulable. La aporta el
+investigador, se compara contra el comando normalizado, y nunca entra en un prompt.
+Nulo significa "no comparado", que es un hecho distinto de "comparado e
+incorrecto", y queda fuera del denominador de precisión en lugar de contarse como
+fallo.
+
+**La configuración de prompt** — `prompt_configuration_id`, apuntando al montaje
+congelado deduplicado al que pertenece esta ejecución.
 
 **Modelo y endpoint** — `litellm_model`, `provider_slug`, `model_key`,
 `api_base`, `api_flavour`, `model_snapshot`
@@ -149,6 +222,12 @@ posterior de las filas a las que apuntaba.
 `stop_sequences`, `response_format`, `reasoning_mode`, `custom_parameters`.
 Duplicados desde `model_snapshot` para que un barrido de parámetros sea una
 agregación SQL directa.
+
+`reasoning_mode` vive **aquí**, en la ejecución, y no en
+`sampling_configurations`, que lleva el booleano `disable_reasoning`. La distinción
+importa: la configuración guarda la *intención*, la ejecución guarda lo que
+realmente se envió. Editar una configuración después no debe poder cambiar
+retroactivamente la condición a la que se atribuye un resultado pasado.
 
 **`dropped_parameters`** — controles que el runtime ignoró en silencio. Sin esto,
 una corrida parece reproducible sin serlo.
@@ -290,11 +369,20 @@ ORDER BY created_at DESC;
 | `0001_initial` | Diecisiete tablas: el registro experimental básico |
 | `0002_emg_matrix` | El estímulo pasa a ser una matriz cruda N×8; características derivadas, no aportadas |
 | `0003_governance` | Proyectos, auditoría, adjuntos, logs de ejecución, metadatos de petición |
+| `0004_json_contract` | La respuesta pasa a ser un objeto JSON; digests por bloque |
+| `0005_expected_command` | `expected_serial_command`, `dynamic_content`, `matrix_rows_sent` |
+| `0006_emg_context_block` | `emg_context_versions` y el cuarto bloque en las ejecuciones |
+| `0007_prompt_configurations` | `prompt_configurations`, deduplicada sobre el digest congelado |
+| `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
 
 `0002` elimina las ventanas y ejecuciones existentes. Un vector de
 características no determina la forma de onda de la que salió, así que rellenar
 con una matriz sintética habría producido datos fabricados indistinguibles de los
 grabados.
+
+`0007` rellena una fila de configuración por cada `frozen_context_sha256` distinto
+que ya existiera y apunta las ejecuciones previas a ella, para que el historial no
+quede partido en "ejecuciones con configuración" y "ejecuciones de antes".
 
 ```bash
 alembic upgrade head

@@ -23,7 +23,7 @@ impone estructuralmente, no por convención:
 
 | Mecanismo | Garantía |
 |---|---|
-| Prompt de tres bloques, los dos primeros congelados | Entre ejecuciones solo varía la carga EMG |
+| Prompt de cuatro bloques, los tres primeros congelados | Entre ejecuciones solo varía la carga EMG |
 | `frozen_context_sha256` en cada ejecución | Dos corridas son comparables de forma demostrable, o demostrablemente no lo son |
 | Versiones de prompt inmutables | Cualquier resultado publicado se reproduce byte a byte |
 | Especificación del hardware compilada en código | Sin varianza de RAG, sin deriva de recuperación, sin PDF en tiempo de ejecución |
@@ -80,7 +80,9 @@ Detalle completo: [especificación del hardware](hardware.md).
 ├────────────────────────┤
 │ 2 · CONTEXTO TÉCNICO   │  congelado · generado desde el modelo de dominio
 ├────────────────────────┤
-│ 3 · PROMPT DINÁMICO    │  variable · matriz EMG + características derivadas
+│ 3 · CONOCIMIENTO EMG   │  congelado · mapa de electrodos y cómo leerlo
+├────────────────────────┤
+│ 4 · PROMPT DINÁMICO    │  variable · matriz EMG y/o características derivadas
 └────────────────────────┘
             ↓  LiteLLM  ↓
         Respuesta JSON
@@ -89,9 +91,15 @@ Detalle completo: [especificación del hardware](hardware.md).
 El investigador nunca lo ensambla. `build_prompt()` lo hace antes de cada
 inferencia y devuelve los digests SHA-256 de cada bloque.
 
-El bloque 2 **se genera desde `app/domain/`**, no se transcribe, para que los
-límites que se le cuentan al modelo no puedan desviarse de los que aplica el
-validador.
+Los bloques 2 y 3 **se generan desde `app/domain/`**, no se transcriben, para que
+los límites que se le cuentan al modelo no puedan desviarse de los que aplica el
+validador, y para que el mapa de electrodos del prompt sea el mismo por el que
+agrupa el extractor de características.
+
+Los tres bloques congelados se resumen juntos en `frozen_context_sha256`, que es a
+la vez la clave de comparabilidad y la identidad de una **configuración de
+prompt**: los montajes distintos se deduplican, y cada ejecución apunta al que la
+produjo.
 
 ---
 
@@ -99,7 +107,7 @@ validador.
 
 ```
 N filas (instantes de tiempo, ascendente) × 8 columnas (CH1…CH8)
-amplitudes normalizadas a [-1.0, 1.0]
+salida cruda del conversor — sin filtrado, rectificación, normalización ni escalado
 ```
 
 Las características (`rms`, `mav`, `zc`, `ssc`, `wl`, `min`, `max`, `variance`)

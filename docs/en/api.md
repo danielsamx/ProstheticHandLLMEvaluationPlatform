@@ -31,7 +31,7 @@ rig from this, so there is one definition of the hardware in the whole system.
 |---|---|---|
 | `GET` | `/hand/spec` | DOF counts, actuators, joints, gestures, limit profiles, protocol, safety envelope, EMG format |
 | `GET` | `/hand/actuator-joint-map` | Actuator letter → driven joint ids |
-| `GET` | `/hand/output-schema` | The JSON Schema the LLM must satisfy |
+| `GET` | `/hand/output-contract` | The JSON Schema the LLM must satisfy |
 
 ---
 
@@ -92,8 +92,8 @@ than present an authoritative-looking ranking built on unequal conditions.
 
 ## Prompts
 
-Three versioned artefacts. Editing creates a new version; existing rows are never
-modified.
+**Four** versioned artefacts. Editing creates a new version; existing rows are
+never modified.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -104,12 +104,100 @@ modified.
 | `GET` | `/prompts/technical-context/generated` | Regenerate canonically from the domain model |
 | `POST` | `/prompts/technical-context` | New version |
 | `POST` | `/prompts/technical-context/{id}/activate` | Make active |
+| `GET` | `/prompts/emg-context` | EMG knowledge versions |
+| `GET` | `/prompts/emg-context/generated` | Regenerate canonically from the domain model |
+| `POST` | `/prompts/emg-context` | New version |
+| `POST` | `/prompts/emg-context/{id}/activate` | Make active |
 | `GET` | `/prompts/dynamic-templates` | Dynamic templates |
 | `POST` | `/prompts/dynamic-templates` | New template |
 | `POST` | `/prompts/preview` | Assemble the final prompt **without spending a token** |
 
-`preview` returns the three blocks, the assembled messages, character counts and
-all five digests — including `frozen_context_sha256`, the comparability key.
+Block 3 (EMG knowledge) is a separate artefact from block 2 on purpose. "What can
+this hand do?" changes only when the hardware does; "is co-contraction a stop or
+physiological coactivation?" is a methodological position that gets revised
+repeatedly. Sharing one artefact would mean every experiment on the second
+question also reversioned the first, and the two effects could not be told apart.
+
+```http
+POST /api/v1/prompts/preview
+{
+  "window": { "samples": [[…]], "source_mode": "manual", "sample_rate_hz": 1000 },
+  "dynamic_content": "matrix",
+  "matrix_max_rows": null,
+  "limit_profile": "TABLE_5_V3",
+  "context_window": 8192
+}
+```
+
+`preview` returns the **four** blocks, the assembled messages, the joined
+`full_prompt`, character counts, the token budget per block and all six digests —
+including `frozen_context_sha256`, the comparability key and the deduplication key
+for prompt configurations.
+
+Two response fields report what was *actually* rendered rather than what was
+requested: `matrix_rows_sent` and `dynamic_content`. A row cap decimates with a
+whole-number stride, so a cap of 64 on 404 rows yields 58; echoing the request
+back would misreport the stimulus.
+
+`budget_advice` is expressed in rows, not tokens — "this context holds roughly 159
+rows" is something a caller can act on.
+
+---
+
+## Sampling configurations
+
+How the model is asked: the decoding parameters, plus the one switch that is not a
+decoding parameter.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/configurations` | List, newest first |
+| `POST` | `/configurations` | Create |
+| `GET` | `/configurations/{id}` | Retrieve |
+| `PUT` | `/configurations/{id}` | Replace |
+| `DELETE` | `/configurations/{id}` | Remove |
+| `GET` | `/presets` | Saved lab presets |
+
+```http
+POST /api/v1/configurations
+{
+  "name": "greedy · no thinking",
+  "model_id": "…",
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_tokens": 1024,
+  "seed": 42,
+  "response_format": "json_object",
+  "disable_reasoning": true
+}
+```
+
+**`disable_reasoning` defaults to `true`** and is the most consequential field here
+for a reasoning model. A Qwen3-class model splits its output — working-out to
+`reasoning_content`, answer to `content` — and given a hard classification with a
+token ceiling it can spend the whole ceiling deliberating and return an empty
+`content`. The platform would then record a parse failure for a model that was
+still thinking.
+
+When it is true, **two** switches are sent, because two conventions exist and
+runtimes disagree about which they read:
+
+| Sent | Convention | Read by |
+|---|---|---|
+| `chat_template_kwargs: {"enable_thinking": false}` | Qwen3 | The chat template |
+| `reasoning_effort: "none"` | OpenAI | The runtime's inference layer |
+
+A runtime that does not recognise one ignores it, so sending both costs nothing and
+covers both families.
+
+`response_format` accepts `text`, `json_object` and `json_schema`. A `json_object`
+request is **upgraded** to `json_schema` for runtimes whose OpenAI-compatible layer
+rejects the plain spelling — LM Studio among them. Upgrading rather than
+downgrading to free text is deliberate: a schema makes malformed JSON
+*undecodable*, and that guarantee is worth keeping.
+
+Unknown parameters are dropped per model rather than sent and rejected: a runtime
+that has never heard of `top_k` fails the whole request over it.
 
 ---
 
@@ -133,23 +221,21 @@ POST /api/v1/emg/parse
 {
   "text": "CH0,CH1,...\n-2,-2,-3,-3,0,2,0,0\n...",
   "sample_rate_hz": 1000,
-  "normalisation": "full_scale",
-  "full_scale": 512
+  "ground_truth_gesture": "close"
 }
 ```
 
-The response reports `divisor`, `observed_peak` and `inferred_full_scale`,
-because how amplitudes were normalised determines whether two windows can be
-compared at all.
+**Values pass through unchanged.** There is no normalisation parameter, and the
+request schema forbids unknown fields — nothing between the electrode and the
+prompt rescales anything, so what the model is judged on is what the hardware
+produced. `observed_peak` comes back only so an interface can show the signal's
+range; nothing in the platform acts on it.
 
-| `normalisation` | Behaviour |
-|---|---|
-| `full_scale` | Divide by the declared converter range. **Default.** |
-| `none` | Reject anything outside [-1, 1] |
-| `peak` | Divide by this window's own maximum — **breaks cross-window comparability**, and says so in `warnings` |
-
-A transposed matrix (8 rows × N columns) is detected and named explicitly rather
-than accepted.
+Permissive about delimiters and header labels — acquisition tools emit `CH0…CH7`
+as readily as `CH1…CH8`, and a label-only first line is skipped by shape rather
+than by matching specific names. Strict about the matrix itself: a transposed
+matrix (8 rows × N columns) would corrupt every derived feature, so it is detected
+and named explicitly rather than accepted.
 
 ---
 
@@ -159,6 +245,8 @@ than accepted.
 |---|---|---|
 | `POST` | `/executions/run` | Run one experiment, optionally repeated |
 | `GET` | `/executions` | List, filterable |
+| `GET` | `/executions/stats` | Aggregates computed **in SQL**, not over a loaded page |
+| `GET` | `/executions/configurations` | Distinct frozen prompt setups, with results per model |
 | `GET` | `/executions/{id}` | One execution with validation, metrics and movement |
 | `GET` | `/executions/{id}/prompt` | The literal prompt that was sent |
 | `POST` | `/executions/{id}/replay-movement` | Re-emit a stored validated pose |
@@ -170,16 +258,85 @@ POST /api/v1/executions/run
   "window": { "samples": [[…]], "source_mode": "manual", "sample_rate_hz": 1000 },
   "handedness": "right",
   "limit_profile": "TABLE_5_V3",
-  "repetitions": 5
+  "repetitions": 5,
+  "expected_serial_command": "C",
+  "dynamic_content": "matrix",
+  "matrix_max_rows": null
 }
 ```
+
+`expected_serial_command` is the answer key. It is stored on the execution,
+compared against the **normalised** command so formatting never counts as a wrong
+answer, and **never placed in any prompt**. Runs without one are excluded from the
+accuracy denominator: "not compared" and "compared and wrong" are different facts.
 
 With `repetitions > 1` the response includes `determinism`: distinct responses
 and the modal agreement rate. At temperature 0 with a fixed seed, anything below
 1.0 means the runtime is not honouring the seed.
 
 `replay-movement` only works for executions that passed validation, so it cannot
-resurrect an unsafe pose.
+resurrect an unsafe pose. It also writes a `replay` row to the movement log — it
+moved the hand, so it is recorded like anything else that did.
+
+### `GET /executions/stats`
+
+Returns `comparable: false` when the matching rows did not all share one
+`frozen_context_sha256`, plus `command_labelled` / `command_matched` /
+`command_accuracy`. The denominator travels with the rate on purpose: 100% of three
+runs and 100% of three hundred are different claims.
+
+### `GET /executions/configurations`
+
+One row per distinct combination of the three frozen blocks, keyed on
+`frozen_context_sha256`. Each carries its label (`S1.0 · T1.1 · E1.1`), the three
+block versions, the frozen text as it stood, `first_used_at` / `last_used_at`, and
+`by_model` — results broken down per model, because a configuration is only
+comparable within one.
+
+---
+
+## Movement
+
+Commands that reached the simulator, the prosthesis, or both. Distinct from the
+execution history: that records what models *answered*, this records what *moved
+the hand*.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/movement/send` | Validate a typed command and publish it to the simulator |
+| `POST` | `/movement/log/{id}/delivered` | The browser reporting what the hardware did |
+| `GET` | `/movement/log` | The log, newest first. `limit` ≤ 1000, `source` filter |
+
+```http
+POST /api/v1/movement/send
+{
+  "serial_command": "A320,B240",
+  "handedness": "right",
+  "limit_profile": "TABLE_5_V3",
+  "notes": "checking the link after a firmware flash"
+}
+```
+
+A typed command goes through the **same seven validation stages** a model's answer
+does — not a parallel checker. Two definitions of "safe" would drift, and the
+guarantee would become whichever one happened to run. The mechanical stops do not
+care who chose the number. A rejected command comes back as `400` carrying the
+validator's own message, which already names the actuator, the value and the
+profile that refused it.
+
+The response reports `simulator_clients`: zero means the command was accepted and
+published but nothing was listening, which is a different outcome from rejection
+and is reported as one.
+
+`POST /movement/log/{id}/delivered?transport=serial` is a **separate call** because
+the two destinations succeed and fail independently — the simulator renders from
+the backend, the hardware is driven from the browser, and the backend cannot reach
+a serial port. One combined write would have to guess at the half it cannot see.
+Pass `error=…` instead to record a failed write.
+
+`GET /movement/log` filters on `source`: `execution`, `manual` or `replay`. The
+three answer different questions — evidence, a check on the plumbing, and neither
+— so counting them together would be wrong.
 
 ---
 

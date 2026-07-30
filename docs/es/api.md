@@ -34,7 +34,7 @@ el sistema.
 |---|---|---|
 | `GET` | `/hand/spec` | Grados de libertad, actuadores, articulaciones, gestos, perfiles de límites, protocolo, envolvente de seguridad, formato EMG |
 | `GET` | `/hand/actuator-joint-map` | Letra de actuador → ids de articulación que acciona |
-| `GET` | `/hand/output-schema` | El JSON Schema que el LLM debe cumplir |
+| `GET` | `/hand/output-contract` | El JSON Schema que el LLM debe cumplir |
 
 ---
 
@@ -97,8 +97,8 @@ sobre condiciones desiguales.
 
 ## Prompts
 
-Tres artefactos versionados. Editar crea una versión nueva; las filas existentes
-no se modifican nunca.
+**Cuatro** artefactos versionados. Editar crea una versión nueva; las filas
+existentes no se modifican nunca.
 
 | Método | Ruta | Propósito |
 |---|---|---|
@@ -109,13 +109,101 @@ no se modifican nunca.
 | `GET` | `/prompts/technical-context/generated` | Regenerar el canónico desde el modelo de dominio |
 | `POST` | `/prompts/technical-context` | Versión nueva |
 | `POST` | `/prompts/technical-context/{id}/activate` | Activar |
+| `GET` | `/prompts/emg-context` | Versiones del conocimiento EMG |
+| `GET` | `/prompts/emg-context/generated` | Regenerar el canónico desde el modelo de dominio |
+| `POST` | `/prompts/emg-context` | Versión nueva |
+| `POST` | `/prompts/emg-context/{id}/activate` | Activar |
 | `GET` | `/prompts/dynamic-templates` | Plantillas dinámicas |
 | `POST` | `/prompts/dynamic-templates` | Plantilla nueva |
 | `POST` | `/prompts/preview` | Ensamblar el prompt final **sin gastar un token** |
 
-`preview` devuelve los tres bloques, los mensajes ensamblados, los recuentos de
-caracteres y los cinco digests, incluido `frozen_context_sha256`, la clave de
-comparabilidad.
+El bloque 3 (conocimiento EMG) es un artefacto aparte del bloque 2 a propósito.
+"¿Qué puede hacer esta mano?" solo cambia cuando cambia el hardware; "¿la
+co-contracción es un STOP o es coactivación fisiológica?" es una posición
+metodológica que se revisa muchas veces. Compartir un solo artefacto obligaría a
+que cada experimento sobre la segunda pregunta reversionara también la primera, y
+los dos efectos no podrían distinguirse.
+
+```http
+POST /api/v1/prompts/preview
+{
+  "window": { "samples": [[…]], "source_mode": "manual", "sample_rate_hz": 1000 },
+  "dynamic_content": "matrix",
+  "matrix_max_rows": null,
+  "limit_profile": "TABLE_5_V3",
+  "context_window": 8192
+}
+```
+
+`preview` devuelve los **cuatro** bloques, los mensajes ensamblados, el
+`full_prompt` unido, los recuentos de caracteres, el presupuesto de tokens por
+bloque y los seis digests, incluido `frozen_context_sha256`: la clave de
+comparabilidad y la clave de deduplicación de las configuraciones de prompt.
+
+Dos campos de la respuesta informan lo que *realmente* se renderizó, no lo que se
+pidió: `matrix_rows_sent` y `dynamic_content`. Un tope de filas diezma con paso
+entero, así que un tope de 64 sobre 404 filas da 58; devolver la petición como eco
+informaría mal del estímulo.
+
+`budget_advice` se expresa en filas, no en tokens: "este contexto admite unas 159
+filas" es algo sobre lo que quien llama puede actuar.
+
+---
+
+## Configuraciones de muestreo
+
+Cómo se le pregunta al modelo: los parámetros de decodificación, más el único
+interruptor que no es un parámetro de decodificación.
+
+| Método | Ruta | Propósito |
+|---|---|---|
+| `GET` | `/configurations` | Listar, las más nuevas primero |
+| `POST` | `/configurations` | Crear |
+| `GET` | `/configurations/{id}` | Recuperar |
+| `PUT` | `/configurations/{id}` | Reemplazar |
+| `DELETE` | `/configurations/{id}` | Eliminar |
+| `GET` | `/presets` | Presets guardados del laboratorio |
+
+```http
+POST /api/v1/configurations
+{
+  "name": "greedy · sin razonamiento",
+  "model_id": "…",
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_tokens": 1024,
+  "seed": 42,
+  "response_format": "json_object",
+  "disable_reasoning": true
+}
+```
+
+**`disable_reasoning` vale `true` por defecto** y es el campo más determinante de
+todos para un modelo de razonamiento. Un modelo de clase Qwen3 parte su salida
+—desarrollo a `reasoning_content`, respuesta a `content`— y ante una clasificación
+difícil con un techo de tokens puede gastar el techo entero deliberando y devolver
+`content` vacío. La plataforma registraría entonces un fallo de parseo para un
+modelo que seguía pensando.
+
+Cuando vale true se envían **dos** interruptores, porque existen dos convenciones
+y los runtimes no coinciden en cuál leen:
+
+| Se envía | Convención | Lo lee |
+|---|---|---|
+| `chat_template_kwargs: {"enable_thinking": false}` | Qwen3 | La plantilla de chat |
+| `reasoning_effort: "none"` | OpenAI | La capa de inferencia del runtime |
+
+Un runtime que no reconozca uno lo ignora, así que enviar ambos no cuesta nada y
+cubre las dos familias.
+
+`response_format` acepta `text`, `json_object` y `json_schema`. Una petición
+`json_object` se **eleva** a `json_schema` en los runtimes cuya capa compatible con
+OpenAI rechaza la forma simple, LM Studio entre ellos. Elevar en vez de degradar a
+texto libre es deliberado: un esquema vuelve el JSON malformado *indecodificable*,
+y esa garantía vale la pena conservarla.
+
+Los parámetros no soportados se descartan por modelo en lugar de enviarse y ser
+rechazados: un runtime que nunca oyó de `top_k` falla toda la petición por él.
 
 ---
 
@@ -125,7 +213,7 @@ comparabilidad.
 |---|---|---|
 | `GET` | `/emg/format` | El contrato de la matriz: forma, disposición, rango de amplitud, límites |
 | `GET` | `/emg/blank` | Una matriz N×8 a cero |
-| `POST` | `/emg/parse` | Parsear CSV / TSV / JSON pegado y normalizar |
+| `POST` | `/emg/parse` | Parsear CSV / TSV / JSON pegado, sin modificar valores |
 | `GET` | `/emg/synthetic/gestures` | Gestos sintéticos disponibles |
 | `GET` | `/emg/synthetic` | Generar una ventana etiquetada |
 | `GET` | `/emg/windows` | Ventanas almacenadas |
@@ -139,22 +227,21 @@ POST /api/v1/emg/parse
 {
   "text": "CH0,CH1,...\n-2,-2,-3,-3,0,2,0,0\n...",
   "sample_rate_hz": 1000,
-  "normalisation": "full_scale",
-  "full_scale": 512
+  "ground_truth_gesture": "close"
 }
 ```
 
-La respuesta informa de `divisor`, `observed_peak` e `inferred_full_scale`,
-porque cómo se normalizaron las amplitudes determina si dos ventanas son
-comparables siquiera.
+**Los valores pasan sin modificarse.** No hay parámetro de normalización, y el
+esquema de la petición prohíbe campos desconocidos: nada entre el electrodo y el
+prompt reescala nada, así que aquello sobre lo que se juzga al modelo es lo que
+produjo el hardware. `observed_peak` vuelve únicamente para que una interfaz pueda
+mostrar el rango de la señal; nada en la plataforma actúa sobre él.
 
-| `normalisation` | Comportamiento |
-|---|---|
-| `full_scale` | Divide por el rango declarado del conversor. **Por defecto.** |
-| `none` | Rechaza cualquier valor fuera de [-1, 1] |
-| `peak` | Divide por el máximo de la propia ventana — **rompe la comparabilidad entre ventanas**, y lo dice en `warnings` |
-
-Una matriz transpuesta (8 filas × N columnas) se detecta y se nombra
+Permisivo con los delimitadores y con las etiquetas de cabecera —las herramientas
+de adquisición emiten `CH0…CH7` con la misma facilidad que `CH1…CH8`, y una primera
+línea solo de etiquetas se omite por su forma y no por coincidir con nombres
+concretos—. Estricto con la matriz misma: una matriz transpuesta (8 filas × N
+columnas) corrompería toda característica derivada, así que se detecta y se nombra
 explícitamente en lugar de aceptarse.
 
 ---
@@ -165,6 +252,8 @@ explícitamente en lugar de aceptarse.
 |---|---|---|
 | `POST` | `/executions/run` | Ejecutar un experimento, opcionalmente repetido |
 | `GET` | `/executions` | Listar, filtrable |
+| `GET` | `/executions/stats` | Agregados calculados **en SQL**, no sobre una página cargada |
+| `GET` | `/executions/configurations` | Montajes de prompt congelado distintos, con resultados por modelo |
 | `GET` | `/executions/{id}` | Una ejecución con validación, métricas y movimiento |
 | `GET` | `/executions/{id}/prompt` | El prompt literal que se envió |
 | `POST` | `/executions/{id}/replay-movement` | Reemitir una pose validada almacenada |
@@ -176,16 +265,87 @@ POST /api/v1/executions/run
   "window": { "samples": [[…]], "source_mode": "manual", "sample_rate_hz": 1000 },
   "handedness": "right",
   "limit_profile": "TABLE_5_V3",
-  "repetitions": 5
+  "repetitions": 5,
+  "expected_serial_command": "C",
+  "dynamic_content": "matrix",
+  "matrix_max_rows": null
 }
 ```
+
+`expected_serial_command` es la hoja de respuestas. Se guarda en la ejecución, se
+compara contra el comando **normalizado** para que el formato nunca cuente como
+respuesta incorrecta, y **nunca se coloca en ningún prompt**. Las ejecuciones sin
+comando esperado quedan fuera del denominador de precisión: "no comparado" y
+"comparado e incorrecto" son hechos distintos.
 
 Con `repetitions > 1` la respuesta incluye `determinism`: respuestas distintas y
 tasa de acuerdo modal. A temperatura 0 con semilla fija, cualquier valor por
 debajo de 1.0 significa que el runtime no respeta la semilla.
 
 `replay-movement` solo funciona con ejecuciones que pasaron la validación, así que
-no puede resucitar una pose insegura.
+no puede resucitar una pose insegura. También escribe una fila `replay` en el
+registro de movimientos: movió la mano, así que se registra como cualquier otra
+cosa que la haya movido.
+
+### `GET /executions/stats`
+
+Devuelve `comparable: false` cuando las filas coincidentes no compartían todas un
+mismo `frozen_context_sha256`, además de `command_labelled` / `command_matched` /
+`command_accuracy`. El denominador viaja con la tasa a propósito: 100% de tres
+ejecuciones y 100% de trescientas son afirmaciones distintas.
+
+### `GET /executions/configurations`
+
+Una fila por cada combinación distinta de los tres bloques congelados, con clave en
+`frozen_context_sha256`. Cada una lleva su etiqueta (`S1.0 · T1.1 · E1.1`), las
+tres versiones de bloque, el texto congelado tal como estaba, `first_used_at` /
+`last_used_at`, y `by_model`: los resultados desglosados por modelo, porque una
+configuración solo es comparable dentro de uno.
+
+---
+
+## Movimiento
+
+Comandos que llegaron al simulador, a la prótesis, o a ambos. Distinto del
+historial de ejecuciones: aquel registra qué *respondieron* los modelos, este
+registra qué *movió la mano*.
+
+| Método | Ruta | Propósito |
+|---|---|---|
+| `POST` | `/movement/send` | Validar un comando escrito y publicarlo al simulador |
+| `POST` | `/movement/log/{id}/delivered` | El navegador informando de qué hizo el hardware |
+| `GET` | `/movement/log` | El registro, lo más nuevo primero. `limit` ≤ 1000, filtro `source` |
+
+```http
+POST /api/v1/movement/send
+{
+  "serial_command": "A320,B240",
+  "handedness": "right",
+  "limit_profile": "TABLE_5_V3",
+  "notes": "revisando el enlace tras grabar el firmware"
+}
+```
+
+Un comando escrito pasa por las **mismas siete etapas de validación** que la
+respuesta de un modelo, no por un verificador paralelo. Dos definiciones de
+"seguro" se irían separando, y la garantía pasaría a ser la que casualmente se
+ejecutara. A los topes mecánicos no les importa quién eligió el número. Un comando
+rechazado vuelve como `400` con el mensaje del propio validador, que ya nombra el
+actuador, el valor y el perfil que lo rechazó.
+
+La respuesta informa de `simulator_clients`: cero significa que el comando se
+aceptó y se publicó pero nadie estaba escuchando, que es un desenlace distinto del
+rechazo y se informa como tal.
+
+`POST /movement/log/{id}/delivered?transport=serial` es una llamada **aparte**
+porque los dos destinos triunfan y fallan de forma independiente: el simulador se
+dibuja desde el backend, el hardware se maneja desde el navegador, y el backend no
+puede alcanzar un puerto serie. Una sola escritura combinada tendría que adivinar
+la mitad que no ve. Pase `error=…` para registrar una escritura fallida.
+
+`GET /movement/log` filtra por `source`: `execution`, `manual` o `replay`. Los tres
+responden preguntas distintas —evidencia, una comprobación de la plomería, y
+ninguna de las dos— así que contarlos juntos sería incorrecto.
 
 ---
 
