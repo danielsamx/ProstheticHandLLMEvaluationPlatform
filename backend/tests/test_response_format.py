@@ -252,3 +252,72 @@ def test_the_shipped_timeout_is_a_ceiling_not_a_hosted_api_figure():
             f"{name} sets a {match.group(1)}s deadline; local CPU inference "
             "regularly needs longer than that for prompt processing alone."
         )
+
+
+# ── Reasoning models ────────────────────────────────────────────────────────
+
+
+def _load_answer_reader():
+    return _load_resolver(extra={"_answer_of", "_ANSWER_FIELDS"})
+
+
+class _Message:
+    def __init__(self, **fields):
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+    def __getattr__(self, _name):  # anything not set is absent
+        return None
+
+
+def test_an_answer_stranded_on_the_reasoning_channel_is_recovered():
+    """The failure this guards, verbatim from a Qwen3.5-9B run:
+
+        "content": "",
+        "reasoning_content": "{ \\"intent\\": \\"no_action\\", ... }"
+
+    with finish_reason "stop" and 26 reasoning tokens. Reasoning models split
+    their output in two, and this one put the entire answer on the thinking
+    channel. Reading only `content` recorded it as an empty response and a parse
+    failure, while the model had in fact answered.
+    """
+    reader = _load_answer_reader()
+    text, channel = reader._answer_of(
+        _Message(content="", reasoning_content='{"intent": "no_action"}')
+    )
+    assert text == '{"intent": "no_action"}'
+    assert channel == "reasoning_content"
+
+
+def test_content_wins_whenever_it_has_anything_in_it():
+    """The fallback must never override a real answer. A reasoning model that
+    fills both channels puts its working-out in the reasoning field, and taking
+    that over the answer would be strictly worse than the original bug."""
+    reader = _load_answer_reader()
+    text, channel = reader._answer_of(
+        _Message(content='{"the": "answer"}', reasoning_content="let me think...")
+    )
+    assert text == '{"the": "answer"}'
+    assert channel == "content"
+
+
+def test_a_genuinely_empty_reply_stays_empty():
+    """Recovery must not manufacture an answer where there was none: an empty
+    response is a real result and has to keep failing the parse stage."""
+    reader = _load_answer_reader()
+    assert reader._answer_of(_Message(content="")) == ("", "content")
+    assert reader._answer_of(_Message(content="   ", reasoning_content="  ")) == (
+        "", "content",
+    )
+
+
+def test_the_recovery_channel_is_recorded_rather_than_hidden():
+    """A model that only ever answers on its thinking channel behaves
+    differently from one that answers where asked, and the record has to be able
+    to tell them apart."""
+    source = (BACKEND / "app" / "services" / "llm_service.py").read_text()
+    assert "content_channel: str = \"content\"" in source
+    assert "content_channel=content_channel," in source
+
+    orchestrator = (BACKEND / "app" / "services" / "execution_service.py").read_text()
+    assert 'if call.content_channel != "content":' in orchestrator

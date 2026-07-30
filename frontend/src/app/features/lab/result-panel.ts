@@ -223,10 +223,14 @@ export class ResultPanel {
       {
         label: 'Command',
         value: execution.movement?.serial_command
-          ?? execution.validation_result?.normalised_serial ?? '—',
-        icon: 'terminal',
-        tone: execution.validation_passed ? navy : pink,
-        hint: 'What would be sent to the prosthesis. Empty when validation rejected the response.',
+          ?? execution.validation_result?.normalised_serial
+          ?? (metrics.refused_to_act ? 'no command' : '—'),
+        icon: metrics.refused_to_act ? 'pause_circle' : 'terminal',
+        tone: metrics.refused_to_act ? amber : execution.validation_passed ? navy : pink,
+        hint: metrics.refused_to_act
+          ? 'The model declined to act, so nothing was transmitted and the hand '
+            + 'did not move. A valid outcome, not a failure.'
+          : 'What would be sent to the prosthesis. Empty when validation rejected the response.',
       },
       {
         label: 'Accuracy',

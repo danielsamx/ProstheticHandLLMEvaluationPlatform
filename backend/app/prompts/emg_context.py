@@ -40,7 +40,7 @@ from app.domain.hand_spec import EMG_CHANNEL_SITES
 #: From here the version means what a researcher expects it to mean: 1.0 is the
 #: text this platform ships with, and anything above it is a change someone
 #: made deliberately and can be asked about.
-EMG_CONTEXT_VERSION: Final[str] = "1.0"
+EMG_CONTEXT_VERSION: Final[str] = "1.1"
 EMG_CONTEXT_NAME: Final[str] = "Myo Armband 8-channel EMG - interpretation"
 
 
@@ -80,6 +80,8 @@ Normal grasping may activate both flexors and extensors because of physiological
 Simultaneous agonist and antagonist activity alone does not indicate STOP.
 Infer the movement whose overall pattern is most consistent with the observed EMG.
 If evidence is insufficient return no_action.
+When intent is no_action, leave serial_command empty and send no gesture.
+no_action means the hand does not move. It is never S, and never O.
 Return STOP only when ALL of the following are true:
 1. Flexor and extensor activation are both high.
 2. Their activation is approximately balanced across most channels.

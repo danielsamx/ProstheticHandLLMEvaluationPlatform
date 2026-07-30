@@ -85,6 +85,12 @@ class LlmCallResult:
     #: reject it, and either can be downgraded to `text` on refusal.
     effective_response_format: str = "text"
     format_downgraded: bool = False
+    #: Which channel the answer came from: `content` normally, or the name of
+    #: the reasoning field it had to be recovered from. Recorded rather than
+    #: hidden, because a model that answers only on its thinking channel is
+    #: behaving differently from one that answers where asked, and that
+    #: difference should be visible in the results rather than smoothed over.
+    content_channel: str = "content"
 
 
 def build_model_string(litellm_prefix: str, model_key: str) -> str:
@@ -243,7 +249,7 @@ async def call_llm(
 
     try:
         choice = response.choices[0]
-        content = choice.message.content or ""
+        content, content_channel = _answer_of(choice.message)
         finish_reason = getattr(choice, "finish_reason", None)
     except (AttributeError, IndexError) as exc:
         raise LlmCallError(
@@ -285,6 +291,7 @@ async def call_llm(
         raw_usage=_usage_dict(usage),
         effective_response_format=effective_format,
         format_downgraded=format_downgraded,
+        content_channel=content_channel,
     )
 
 
@@ -313,6 +320,55 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
         k: v for k, v in vars(usage).items()
         if not k.startswith("_") and isinstance(v, (int, float, str))
     }
+
+
+#: Fields a runtime may put the answer in when `content` comes back empty.
+#:
+#: Ordered by how likely they are to hold the *final* answer rather than the
+#: working-out. OpenAI-compatible servers have not converged on a name for the
+#: thinking channel, so each is tried in turn.
+_ANSWER_FIELDS: tuple[str, ...] = (
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+)
+
+
+def _answer_of(message) -> tuple[str, str]:
+    """The model's answer, wherever the runtime decided to put it.
+
+    Returns ``(text, channel)`` — the channel being ``content`` normally, or the
+    name of the field it had to be recovered from.
+
+    Reasoning models split their output in two: the working-out goes to a
+    separate channel and the answer to `content`. When such a model produces
+    *only* working-out — because the whole reply fit in its thinking budget, or
+    because it never emitted a closing marker — `content` arrives empty and the
+    answer is stranded in a field nothing was reading.
+
+    That is not a hypothetical. Qwen3.5-9B returned::
+
+        "content": "",
+        "reasoning_content": "{\n  \"intent\": \"no_action\", ... }"
+
+    with `finish_reason: "stop"` and 26 reasoning tokens. The run was recorded
+    as an empty response and a parse failure, while the model had in fact
+    answered — the answer was simply on the other channel.
+
+    Reading the fallback is not leniency. A reply recovered this way is flagged,
+    so the metrics can still tell a model that answers on the expected channel
+    from one that does not.
+    """
+    content = getattr(message, "content", None) or ""
+    if content.strip():
+        return content, "content"
+
+    for field in _ANSWER_FIELDS:
+        recovered = getattr(message, field, None) or ""
+        if recovered.strip():
+            return recovered, field
+
+    return "", "content"
 
 
 def _wrap(

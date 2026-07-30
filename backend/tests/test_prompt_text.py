@@ -103,6 +103,8 @@ Normal grasping may activate both flexors and extensors because of physiological
 Simultaneous agonist and antagonist activity alone does not indicate STOP.
 Infer the movement whose overall pattern is most consistent with the observed EMG.
 If evidence is insufficient return no_action.
+When intent is no_action, leave serial_command empty and send no gesture.
+no_action means the hand does not move. It is never S, and never O.
 Return STOP only when ALL of the following are true:
 1. Flexor and extensor activation are both high.
 2. Their activation is approximately balanced across most channels.
@@ -185,4 +187,7 @@ def test_the_blocks_carry_the_versions_this_text_was_filed_under():
     """
     assert SYSTEM_PROMPT_VERSION == "1.0"
     assert TECHNICAL_CONTEXT_VERSION == "1.0"
-    assert EMG_CONTEXT_VERSION == "1.0"
+    # 1.1: states what no_action means on the wire. The version moved because
+    # the text did, so the seed files a new artefact and runs before and after
+    # stay distinguishable — they were given different instructions.
+    assert EMG_CONTEXT_VERSION == "1.1"

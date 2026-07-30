@@ -121,9 +121,12 @@ def compute_metrics(
         "used_preset_gesture": bool(command and command.intent in ("gesture", "stop")),
         # "Refusing" is now a real command: `O` holds the hand open. It is the
         # documented rest pose, so it is both a refusal and a safe action.
-        "refused_to_act": bool(
-            command and command.gesture == ControlCommand.OPEN.value
-        ),
+        # A refusal is now literally a refusal: `no_action` with no command, so
+        # nothing was transmitted. It used to be inferred from a gesture of `O`,
+        # which conflated "I decline to move" with "I have decided to open the
+        # hand" — two different answers that a model can give for two different
+        # reasons.
+        "refused_to_act": bool(command and command.is_inaction),
         "latency_ms": call.latency_ms if call else None,
         "tokens_per_second": call.tokens_per_second if call else None,
         "cost_usd": call.cost_usd if call else 0.0,

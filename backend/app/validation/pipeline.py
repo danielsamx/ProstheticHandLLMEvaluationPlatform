@@ -199,6 +199,47 @@ def validate_response(
             context={"value": command.detected_pattern},
         ))
 
+    # ── Inaction: a declared refusal, with nothing to carry out ─────────────
+    #
+    # `no_action` with no command is a complete, valid answer, and it short
+    # circuits here because the four stages below all ask questions about a
+    # movement. "Is the command well formed?", "is the position in range?", "is
+    # the pose reachable?" have no answer when there is no command, and running
+    # them anyway is what produced the failures this branch exists to end: the
+    # model had to name a movement it had just said it did not want, so it
+    # invented one, and the invention failed `protocol`.
+    #
+    # Nothing is transmitted and nothing is rendered. The record still gets a
+    # passing execution with `intent: no_action`, which is the measurement — a
+    # model that refuses when the evidence is thin is behaving correctly, and it
+    # should not be scored as a parse failure for doing so.
+    if command.is_inaction:
+        for stage in (ValidationStage.PROTOCOL, ValidationStage.CONSISTENCY,
+                      ValidationStage.RANGE, ValidationStage.KINEMATIC,
+                      ValidationStage.SAFETY):
+            report.stages_completed.append(stage)
+        report.normalised_serial = None
+        report.resolved_pose = None
+        if command.detected_pattern is None:
+            command.detected_pattern = "rest"
+        report.passed = True
+        return report
+
+    # A refusal that still names a movement is the contradiction this whole
+    # branch is about. Caught explicitly so the message says what went wrong
+    # rather than surfacing as a protocol error three stages later.
+    if command.intent == "no_action":
+        report.add(ValidationIssue(
+            ValidationStage.CONSISTENCY, "NO_ACTION_WITH_COMMAND",
+            f"intent='no_action' but serial_command is "
+            f"{command.serial_command!r}. Inaction means no command at all: "
+            "leave serial_command empty.",
+            field_path="serial_command",
+            context={"command": command.serial_command},
+        ))
+        report.stages_completed.append(ValidationStage.PROTOCOL)
+        return _finish(report)
+
     # ── Stage 3: protocol ───────────────────────────────────────────────────
     try:
         frame: SerialFrame = parse_serial_command(command.serial_command)

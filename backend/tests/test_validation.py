@@ -99,11 +99,31 @@ def test_positions_pass_and_resolve_to_a_pose():
     assert report.resolved_pose.actuator_positions["B"] == 180
 
 
-def test_a_refusal_passes():
-    """`O` is how the model declines to act, so it must stay executable."""
-    report = check(response("O", intent="no_action", confidence=0.2))
+def test_a_refusal_passes_and_transmits_nothing():
+    """`no_action` means no command at all, and that is a complete answer.
+
+    It used to require a command, which forced a contradiction: the model had to
+    name a movement it had just declined to make. It had nothing to name, so it
+    reached for the nearest thing — one run invented the string "no_action", the
+    next sent `S`. Both failed validation, and both were the schema's fault.
+
+    `O` was the only accepted spelling, and it is the wrong one: on a hand that
+    is holding something, opening it drops the object. The protocol has no "hold
+    position" command, so the honest representation of inaction is the absence
+    of a command rather than the presence of a harmless-looking one.
+    """
+    report = check(json.dumps({"intent": "no_action", "confidence": 0.2}))
     assert report.passed, [i.message for i in report.errors]
     assert report.parsed_command.intent == "no_action"
+    assert report.parsed_command.is_inaction
+
+    # Nothing to transmit and nothing to render.
+    assert report.normalised_serial is None
+    assert report.resolved_pose is None
+
+    # Still a completed run: every stage is recorded, so a model that refuses
+    # sensibly is not scored as one that failed to parse.
+    assert report.stages_completed == ALL_STAGES
 
 
 def test_emergency_stop_passes_and_produces_no_pose():
@@ -180,10 +200,13 @@ def test_an_unknown_field_is_rejected():
     assert report.failed_stage is ValidationStage.SCHEMA
 
 
-def test_a_missing_serial_command_is_rejected():
-    report = check(json.dumps({"hand": "right", "intent": "gesture", "gesture": "C"}))
+def test_a_missing_serial_command_is_rejected_for_any_acting_intent():
+    """Optional only for `no_action`. An intent that moves the hand must say
+    how, and omitting it is now a protocol failure rather than a schema one —
+    the field parses, it simply describes no command."""
+    report = check(json.dumps({"intent": "gesture", "gesture": "C"}))
     assert not report.passed
-    assert report.failed_stage is ValidationStage.SCHEMA
+    assert report.failed_stage is ValidationStage.PROTOCOL
 
 
 def test_an_invented_intent_is_rejected():
@@ -289,12 +312,21 @@ def test_a_commands_array_disagreeing_with_the_command_is_rejected():
     assert any(i.code == "COMMANDS_MISMATCH" for i in report.errors)
 
 
-def test_no_action_that_actually_moves_something_is_rejected():
-    """The most dangerous inconsistency: the model reports it is holding still
-    while sending a command that closes the hand."""
-    report = check(response("A320", intent="no_action", confidence=0.2))
+@pytest.mark.parametrize("serial", ["A320", "S", "O", "C"])
+def test_a_refusal_that_names_any_movement_is_rejected(serial):
+    """The contradiction, in every spelling a model has reached for.
+
+    `A320` and `C` are plainly movements. `S` is a halt, which is a decision
+    rather than an abstention. `O` opens the hand — the spelling that used to be
+    accepted, and the one that drops whatever is being held.
+
+    Rejected with a message that names the fix, because a model told only that
+    its answer was wrong will reach for the next-nearest thing.
+    """
+    report = check(response(serial, intent="no_action", confidence=0.2))
     assert not report.passed
-    assert any(i.code == "NO_ACTION_THAT_ACTS" for i in report.errors)
+    issue = next(i for i in report.errors if i.code == "NO_ACTION_WITH_COMMAND")
+    assert "leave serial_command empty" in issue.message
 
 
 def test_stop_must_be_declared_as_stop_not_as_a_gesture():
@@ -315,12 +347,12 @@ def test_joint_positions_intent_with_no_positions_is_rejected():
     assert any(i.code == "INTENT_WITHOUT_POSITIONS" for i in report.errors)
 
 
-def test_a_confident_refusal_is_warned_not_blocked():
-    """Not dangerous, but it means the model is not using the confidence scale
-    as instructed — which matters when confidence is an analysed variable."""
-    report = check(response("O", intent="no_action", confidence=0.99))
+def test_a_confident_refusal_still_passes():
+    """High confidence on a refusal is not dangerous — the hand does not move
+    either way. It is worth noticing only as a sign the model is not using the
+    confidence scale as instructed, which matters when confidence is analysed."""
+    report = check(json.dumps({"intent": "no_action", "confidence": 0.99}))
     assert report.passed
-    assert any(i.code == "CONFIDENT_REFUSAL" for i in report.warnings)
 
 
 # ── Stage 5: range ──────────────────────────────────────────────────────────
@@ -399,3 +431,50 @@ def test_the_hand_is_never_taken_from_the_response():
 
     left = check(response("C", hand="right"), hand=Handedness.LEFT)
     assert left.resolved_pose.handedness is Handedness.LEFT
+
+
+def test_a_refusal_produces_no_movement_and_so_reaches_no_hardware() -> None:
+    """The safety property, traced to the code rather than asserted in prose.
+
+    A `SimulatorMovement` is only built when a pose was resolved, and the
+    prosthesis link is fed from broadcast movements. Inaction resolves no pose,
+    so there is no movement row, nothing is broadcast, and nothing can be
+    transmitted — the hand stays exactly where it was.
+    """
+    import pathlib
+
+    report = check(json.dumps({"intent": "no_action"}))
+    assert report.passed
+    assert report.resolved_pose is None
+
+    backend = pathlib.Path(__file__).resolve().parent.parent
+    service = (backend / "app" / "services" / "execution_service.py").read_text()
+    assert "if report.passed and report.resolved_pose is not None:" in service
+    assert "execution.movement = SimulatorMovement(" in service
+
+    endpoint = (backend / "app" / "api" / "v1" / "executions.py").read_text()
+    assert "if execution.validation_passed and execution.movement is not None:" in endpoint
+
+
+def test_a_refusal_is_scored_against_an_expected_command_as_a_miss() -> None:
+    """Refusing is a legitimate answer, not a free pass.
+
+    If the window was labelled `C` and the model declined, that is wrong — and
+    it has to count as wrong, or a model that refuses everything would score
+    perfectly on a labelled set.
+    """
+    from app.domain.protocol import normalise_expected_command
+    from app.services.emg_service import synthesise_window
+    from app.services.metrics_service import compute_metrics
+
+    report = check(json.dumps({"intent": "no_action", "confidence": 0.2}))
+    assert report.passed
+
+    metrics = compute_metrics(
+        report=report, call=None,
+        window=synthesise_window("power_grasp", seed=1, samples=8),
+        handedness=Handedness.RIGHT, profile=None,
+        expected_serial_command=normalise_expected_command("C"),
+    )
+    assert metrics["command_matches_expected"] is False
+    assert metrics["refused_to_act"] is True

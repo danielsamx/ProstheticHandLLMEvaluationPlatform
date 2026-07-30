@@ -413,6 +413,18 @@ async def run_execution(
         completion_tokens=call.completion_tokens,
         cost_usd=call.cost_usd)
 
+    if call.content_channel != "content":
+        # A reasoning model that answered only on its thinking channel. The
+        # answer is usable — it was recovered — but the deviation belongs in the
+        # record: without this line the run looks like any other, and a model
+        # that never fills `content` would be silently indistinguishable from
+        # one that does.
+        log(LogLevel.WARNING, "provider",
+            f"The reply arrived on '{call.content_channel}' rather than "
+            "'content'. This runtime splits reasoning from the answer, and this "
+            "model put the whole answer on the reasoning channel.",
+            channel=call.content_channel)
+
     if call.format_downgraded:
         log(LogLevel.WARNING, "provider",
             "The runtime refused the structured-output request; the call was "

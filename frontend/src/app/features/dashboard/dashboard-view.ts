@@ -326,8 +326,14 @@ import { LabStore } from '@core/services/lab.store';
                     </td>
                     <td class="lab-mono px-3 py-1.5"
                         [class]="matchTone(execution)">
+                      <!--
+                        A refusal and a rejection both leave no command, and they
+                        are opposite outcomes: one is the model behaving well.
+                        Showing the same dash for both would hide that.
+                      -->
                       {{ execution.movement?.serial_command
-                         ?? execution.validation_result?.normalised_serial ?? '—' }}
+                         ?? execution.validation_result?.normalised_serial
+                         ?? (execution.metrics?.refused_to_act ? 'no command' : '—') }}
                     </td>
                     <td class="px-3 py-1.5 text-center">
                       <!--

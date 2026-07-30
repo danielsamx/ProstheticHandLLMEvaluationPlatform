@@ -128,7 +128,23 @@ class ProstheticCommand(BaseModel):
     intent: Literal["gesture", "joint_positions", "stop", "no_action"]
     gesture: Literal[_GESTURE_LETTERS] | None = None  # type: ignore[valid-type]
     commands: list[CommandEntry] = Field(default_factory=list)
-    serial_command: str
+
+    #: Empty or absent when `intent` is `no_action`, and required otherwise.
+    #:
+    #: This field used to be mandatory, which quietly forced a contradiction:
+    #: `no_action` says *do not move*, and the model still had to name a
+    #: movement. It had nothing to name, so it reached for whatever looked
+    #: closest — one run invented the string "no_action", the next sent `S`
+    #: (STOP). Both failed validation, and both were the schema's fault rather
+    #: than the model's.
+    #:
+    #: `no_action` now means literally that: no command, nothing transmitted,
+    #: the hand stays where it is. Which matters more than it sounds — the only
+    #: command that could have stood in for "do nothing" is `O` (open), and on a
+    #: hand that is holding something, opening it drops the object. There is no
+    #: "hold position" command in the protocol, so the honest representation of
+    #: inaction is the absence of a command, not the presence of a harmless one.
+    serial_command: str = ""
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     safety: SafetyAssertion | None = None
 
@@ -138,6 +154,11 @@ class ProstheticCommand(BaseModel):
     #: descriptive label, while the command it carries is perfectly valid, would
     #: throw away a usable result over a documentation inconsistency.
     detected_pattern: str | None = None
+
+    @property
+    def is_inaction(self) -> bool:
+        """A declared refusal to move, with no command to carry out."""
+        return self.intent == NO_ACTION_INTENT and not self.serial_command.strip()
 
     def handedness(self, configured: Handedness) -> Handedness:
         """Always the configured hand. The declared one is not consulted."""
