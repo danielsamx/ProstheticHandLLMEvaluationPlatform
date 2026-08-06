@@ -21,6 +21,7 @@ handled here:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -45,6 +46,25 @@ _FRAGILE_PARAMS = (
     # was not actually suppressed is distinguishable from one where it was.
     "chat_template_kwargs", "reasoning_effort",
 )
+
+
+def _compact_tool_schema(value: Any) -> Any:
+    """Remove documentation metadata that consumes context but changes no validation.
+
+    Pydantic copies class and field docstrings into ``description`` entries.
+    Those are useful in generated API documentation, but the HANDi prompt
+    already explains the contract and sending the same prose inside the tool
+    definition wastes thousands of local-model tokens.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _compact_tool_schema(item)
+            for key, item in value.items()
+            if key not in {"description", "title"}
+        }
+    if isinstance(value, list):
+        return [_compact_tool_schema(item) for item in value]
+    return value
 
 
 class LlmCallError(RuntimeError):
@@ -97,6 +117,10 @@ class LlmCallResult:
     #: behaving differently from one that answers where asked, and that
     #: difference should be visible in the results rather than smoothed over.
     content_channel: str = "content"
+    invocation_mode: str = "structured_output"
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_arguments: dict[str, Any] | None = None
 
 
 def build_model_string(litellm_prefix: str, model_key: str) -> str:
@@ -162,6 +186,7 @@ async def call_llm(
     sampling: dict[str, Any] | None = None,
     response_format_mode: str = "json_object",
     json_schema: dict | None = None,
+    invocation_mode: str = "structured_output",
     timeout_s: float | None = None,
     num_retries: int | None = None,
 ) -> LlmCallResult:
@@ -208,11 +233,40 @@ async def call_llm(
         # LM Studio / Ollama accept any non-empty key; LiteLLM requires one.
         kwargs["api_key"] = settings.lm_studio_api_key
 
-    fmt, effective_format = resolve_response_format(
-        response_format_mode, json_schema, litellm_prefix
-    )
-    if fmt is not None:
-        kwargs["response_format"] = fmt
+    if invocation_mode == "tool_calling":
+        if not json_schema:
+            raise ValueError("Tool calling requires a JSON schema.")
+        # The frozen technical context also documents the legacy structured
+        # response as "JSON only". In tool mode that otherwise competes with
+        # the provider's tool template and capable models may place the same
+        # arguments in assistant content. Keep the scientific prompt frozen,
+        # but append an invocation-specific instruction to the user turn so
+        # the requested response channel is unambiguous and auditable.
+        tool_instruction = (
+            "\n\nTOOL INVOCATION REQUIREMENT\n"
+            "You must respond by calling execute_handi_command exactly once. "
+            "Put the complete decision in the function arguments. Do not emit "
+            "the JSON as assistant text and do not add prose."
+        )
+        tool_messages = [dict(message) for message in messages]
+        if tool_messages:
+            tool_messages[-1]["content"] = tool_messages[-1].get("content", "") + tool_instruction
+        kwargs["messages"] = tool_messages
+        kwargs["tools"] = [{"type": "function", "function": {
+            "name": "execute_handi_command",
+            "description": "Request one HANDi EPN V3 command. The platform validates every argument before movement.",
+                "parameters": _compact_tool_schema(json_schema),
+        }}]
+        # LM Studio 0.4.x accepts only the OpenAI string variants here
+        # (`none`, `auto`, `required`), not the named-function object form.
+        # There is exactly one available tool, so `required` is equivalent to
+        # forcing execute_handi_command while remaining runtime-compatible.
+        kwargs["tool_choice"] = "required"
+        fmt, effective_format = None, "tool_call"
+    else:
+        fmt, effective_format = resolve_response_format(response_format_mode, json_schema, litellm_prefix)
+        if fmt is not None:
+            kwargs["response_format"] = fmt
 
     requested = {k for k in _FRAGILE_PARAMS if k in sampling}
     format_downgraded = False
@@ -256,6 +310,16 @@ async def call_llm(
     try:
         choice = response.choices[0]
         content, content_channel = _answer_of(choice.message)
+        tool_name, tool_call_id, tool_arguments = _tool_answer_of(choice.message)
+        if invocation_mode == "tool_calling":
+            if tool_arguments is None:
+                raise LlmCallError(
+                    "The model returned no execute_handi_command tool call.",
+                    error_type="MissingToolCall",
+                    hint="Load a model and chat template with native tool/function calling support.",
+                )
+            content = json.dumps(tool_arguments, separators=(",", ":"), ensure_ascii=True)
+            content_channel = "tool_calls"
         finish_reason = getattr(choice, "finish_reason", None)
     except (AttributeError, IndexError) as exc:
         raise LlmCallError(
@@ -298,7 +362,32 @@ async def call_llm(
         effective_response_format=effective_format,
         format_downgraded=format_downgraded,
         content_channel=content_channel,
+        invocation_mode=invocation_mode,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_arguments=tool_arguments,
     )
+
+
+def _tool_answer_of(message: Any) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Extract the first OpenAI-compatible function call without executing it."""
+    calls = getattr(message, "tool_calls", None) or []
+    if not calls:
+        return None, None, None
+    call = calls[0]
+    function = getattr(call, "function", None)
+    name = getattr(function, "name", None)
+    call_id = getattr(call, "id", None)
+    raw = getattr(function, "arguments", None)
+    if name != "execute_handi_command" or raw is None:
+        return name, call_id, None
+    if isinstance(raw, dict):
+        return name, call_id, raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise LlmCallError(f"Tool arguments are not valid JSON: {exc}", error_type="InvalidToolArguments") from exc
+    return name, call_id, parsed if isinstance(parsed, dict) else None
 
 
 def _echoed_params(response: Any) -> set[str]:

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
 from app.models.experiment import Execution, Experiment
 from app.models.validation import ValidationIssueRecord, ValidationResult
@@ -30,7 +31,8 @@ async def list_experiments(session: AsyncSession = Depends(get_session)):
     return list((await session.execute(stmt)).scalars().all())
 
 
-@router.post("", response_model=ExperimentOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ExperimentOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission(Permission.MANAGE_PROJECTS))])
 async def create_experiment(payload: ExperimentIn, session: AsyncSession = Depends(get_session)):
     row = Experiment(
         **payload.model_dump(exclude={"limit_profile", "handedness"}),

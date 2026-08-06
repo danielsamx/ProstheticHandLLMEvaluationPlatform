@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -285,6 +285,7 @@ class RunExecutionIn(BaseModel):
     #: create two ways to say which model runs, and therefore a way for them to
     #: disagree.
     sampling_configuration_id: uuid.UUID
+    invocation_mode: Literal["structured_output", "tool_calling"] = "structured_output"
     window: EmgWindow
     handedness: Handedness = Handedness.RIGHT
     system_prompt_version_id: uuid.UUID | None = None
@@ -417,6 +418,7 @@ class ExecutionOut(BaseModel):
     experiment_type: str
     raw_response: str | None = None
     parsed_response: dict[str, Any] | None = None
+    custom_parameters: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

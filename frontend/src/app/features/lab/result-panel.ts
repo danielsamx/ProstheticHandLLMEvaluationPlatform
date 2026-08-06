@@ -1,9 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { Execution, ExecutionMetrics } from '@core/models/llm.model';
 import { LabStore } from '@core/services/lab.store';
+import { ApiService } from '@core/api/api.service';
+import { TranslatePipe } from '@core/services/language.service';
 
 //
 // Seven gates, in the order the backend runs them. `schema` checks the object
@@ -23,10 +27,16 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
   selector: 'ph-result-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatIconModule, MatTooltipModule],
+  imports: [MatIconModule, MatTooltipModule, FormsModule, TranslatePipe],
   template: `
     @if (store.lastResult(); as execution) {
       <div class="space-y-3">
+        @if (execution.custom_parameters['invocation_mode'] === 'tool_calling') {
+          <div class="flex items-center justify-between rounded border border-navy bg-ink-50 px-3 py-2 text-xs">
+            <span class="flex items-center gap-2 font-semibold text-navy"><mat-icon class="!h-4 !w-4 !text-[16px]">build</mat-icon>Tool call received</span>
+            <span class="lab-mono text-pink">{{ execution.custom_parameters['tool_name'] }}</span>
+          </div>
+        }
         <!-- Headline -->
         <div class="flex items-center justify-between rounded border px-3 py-2"
              [class]="execution.validation_passed
@@ -178,6 +188,30 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
           </div>
         }
 
+        <!-- Human feedback also covers a valid no_action prediction. -->
+        @if (execution.validation_passed) {
+          <section class="rounded border border-amber bg-amber/10 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <div><span class="lab-label">Gesture classification feedback</span>
+                <p class="text-[11px] text-ink-600">Rate the prediction even when the model requested no movement.</p></div>
+              <div class="flex gap-2">
+                <button class="rounded bg-navy px-3 py-2 text-xs text-white" (click)="sendFeedback(execution, true)">{{ 'Correct' | tr }}</button>
+                <button class="rounded bg-pink px-3 py-2 text-xs text-white" (click)="openFeedback(execution)">{{ 'Incorrect' | tr }}</button>
+              </div>
+            </div>
+            @if (feedbackOpen()) {
+              <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                <input class="rounded border p-2 text-xs" placeholder="Expected gesture" [(ngModel)]="expectedGesture" />
+                <input class="rounded border p-2 text-xs" placeholder="Observed gesture" [(ngModel)]="observedGesture" />
+                <textarea class="rounded border p-2 text-xs sm:col-span-2" placeholder="What went wrong" [(ngModel)]="feedbackNotes"></textarea>
+                <label class="flex items-center gap-2 text-xs"><input type="checkbox" [(ngModel)]="autoRetry" /> Generate a corrected attempt</label>
+                <button class="rounded bg-pink px-3 py-2 text-xs text-white" (click)="sendFeedback(execution, false)">Save feedback</button>
+              </div>
+            }
+            @if (feedbackMessage()) { <p class="mt-2 text-xs font-semibold text-navy">{{ feedbackMessage() }}</p> }
+          </section>
+        }
+
         <!-- Raw model output -->
         <details class="rounded border border-ink-200 bg-ink-50">
           <summary class="cursor-pointer px-3 py-2 text-[11px] text-ink-500">
@@ -195,7 +229,31 @@ const STAGES = ['parse', 'schema', 'protocol', 'consistency', 'range', 'kinemati
 })
 export class ResultPanel {
   protected readonly store = inject(LabStore);
+  private readonly api = inject(ApiService);
   protected readonly stages = STAGES;
+  protected readonly feedbackOpen = signal(false);
+  protected readonly feedbackMessage = signal('');
+  protected expectedGesture = ''; protected observedGesture = ''; protected feedbackNotes = ''; protected autoRetry = true;
+
+  protected openFeedback(execution: Execution): void {
+    this.expectedGesture = execution.expected_serial_command ?? '';
+    this.observedGesture = String(execution.parsed_response?.['gesture'] ?? execution.parsed_response?.['intent'] ?? '');
+    this.feedbackOpen.set(true);
+  }
+
+  protected async sendFeedback(execution: Execution, correct: boolean): Promise<void> {
+    try {
+      const result = await firstValueFrom(this.api.submitGestureFeedback(execution.id, {
+        is_correct: correct, expected_gesture: this.expectedGesture || null,
+        observed_gesture: this.observedGesture || null, notes: this.feedbackNotes || null,
+        source: 'human', auto_retry: !correct && this.autoRetry, max_attempts: 3,
+      }));
+      this.feedbackMessage.set(result.correction_execution_id
+        ? `Corrected attempt created: ${result.correction_execution_id}. Review it before transmission.`
+        : 'Feedback saved.');
+      this.feedbackOpen.set(false);
+    } catch (error: any) { this.feedbackMessage.set(error?.error?.detail ?? 'Unable to save feedback.'); }
+  }
 
   /**
    * The nine outcome figures, ordered by what they answer.

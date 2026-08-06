@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"
     secret_key: str = "change-me"
+    access_token_expire_minutes: int = 480
+    initial_admin_email: str | None = None
+    initial_admin_password: str | None = None
     cors_origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:4200",

@@ -114,6 +114,7 @@ export class LabStore {
   readonly frequencyPenalty = signal(0);
   readonly presencePenalty = signal(0);
   readonly responseFormat = signal<'text' | 'json_object' | 'json_schema'>('json_object');
+  readonly invocationMode = signal<'structured_output' | 'tool_calling'>('tool_calling');
 
   /**
    * Suppress the model's thinking channel. On by default.
@@ -329,7 +330,7 @@ export class LabStore {
       this.error.set(
         `Cannot reach the backend at ${environment.apiBase}. ` +
         'Check that the API container is running (docker compose ps) and that ' +
-        'nothing else holds port 8000.',
+        'nothing else holds the published port 8081.',
       );
       return;
     }
@@ -854,6 +855,7 @@ export class LabStore {
 
       const payload: RunExecutionPayload = {
         sampling_configuration_id: this.selectedConfigurationId()!,
+        invocation_mode: this.invocationMode(),
         window: toWindowPayload(this.currentWindow()),
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),

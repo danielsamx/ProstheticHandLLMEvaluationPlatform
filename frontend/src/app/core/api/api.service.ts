@@ -33,6 +33,7 @@ export interface HealthReport {
 
 export interface RunExecutionPayload {
   sampling_configuration_id: string;
+  invocation_mode?: 'structured_output' | 'tool_calling';
   window: EmgWindow;
   handedness: Handedness;
   system_prompt_version_id?: string | null;
@@ -299,5 +300,13 @@ export class ApiService {
     return this.http.post<{ replayed: boolean }>(
       `${this.base}/executions/${id}/replay-movement`, {},
     );
+  }
+
+  submitGestureFeedback(executionId: string, body: {
+    is_correct: boolean; score?: number | null; expected_gesture?: string | null;
+    observed_gesture?: string | null; notes?: string | null; source?: string;
+    sensor_snapshot?: Record<string, unknown>; auto_retry?: boolean; max_attempts?: number;
+  }): Observable<{ feedback: unknown; correction_execution_id: string | null; requires_confirmation: boolean }> {
+    return this.http.post<any>(`${this.base}/feedback/execution/${executionId}`, body);
   }
 }

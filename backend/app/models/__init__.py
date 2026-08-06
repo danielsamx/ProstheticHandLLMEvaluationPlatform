@@ -10,6 +10,7 @@ from app.models.enums import (  # noqa: F401
     UserRole,
 )
 from app.models.execution_log import ExecutionLog, LogLevel  # noqa: F401
+from app.models.feedback import GestureFeedback  # noqa: F401
 from app.models.experiment import Execution, Experiment  # noqa: F401
 from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration  # noqa: F401
 from app.models.metrics import ExecutionMetric, SimulatorMovement  # noqa: F401
@@ -48,6 +49,7 @@ __all__ = [
     # Outcome
     "ValidationResult", "ValidationIssueRecord", "ExecutionError", "ErrorCategory",
     "ExecutionMetric", "SimulatorMovement", "ExecutionLog", "LogLevel",
+    "GestureFeedback",
     # Governance
     "AuditLog", "AuditAction", "AuditOutcome", "Attachment",
 ]

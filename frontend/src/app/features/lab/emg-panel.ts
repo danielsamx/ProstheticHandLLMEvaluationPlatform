@@ -481,7 +481,7 @@ export class EmgPanel {
                hint: 'Dorsal group leads. Expect an opening gesture.' };
     }
     return { label: 'co-contraction', tone: 'bg-amber text-navy',
-             hint: 'Both groups active at similar levels — usually a deliberate stop.' };
+             hint: 'Both groups are active at similar levels. This may be physiological coactivation during a grasp and requires a calibrated reference.' };
   }
 
   protected autoRun = true;

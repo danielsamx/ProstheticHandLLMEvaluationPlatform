@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
 from app.models.llm import LlmModel, SamplingConfiguration
 from app.models.prompts import LabPreset
@@ -45,7 +46,8 @@ async def list_configurations(
     return list((await session.execute(stmt)).scalars().all())
 
 
-@router.post("", response_model=SamplingConfigurationOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=SamplingConfigurationOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def create_configuration(
     payload: SamplingConfigurationIn, session: AsyncSession = Depends(get_session)
 ):
@@ -71,7 +73,8 @@ async def get_configuration(
     return row
 
 
-@router.put("/{configuration_id}", response_model=SamplingConfigurationOut)
+@router.put("/{configuration_id}", response_model=SamplingConfigurationOut,
+            dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def update_configuration(
     configuration_id: uuid.UUID,
     payload: SamplingConfigurationIn,
@@ -86,7 +89,8 @@ async def update_configuration(
     return row
 
 
-@router.delete("/{configuration_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{configuration_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def delete_configuration(
     configuration_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ):
@@ -109,7 +113,8 @@ async def list_presets(session: AsyncSession = Depends(get_session)):
     return list((await session.execute(stmt)).scalars().all())
 
 
-@presets_router.post("", response_model=LabPresetOut, status_code=status.HTTP_201_CREATED)
+@presets_router.post("", response_model=LabPresetOut, status_code=status.HTTP_201_CREATED,
+                     dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def create_preset(payload: LabPresetIn, session: AsyncSession = Depends(get_session)):
     row = LabPreset(
         **payload.model_dump(exclude={"handedness", "limit_profile"}),
@@ -127,12 +132,13 @@ async def mark_preset_used(preset_id: uuid.UUID, session: AsyncSession = Depends
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Preset not found.")
     row.use_count += 1
-    row.last_used_at = datetime.now(timezone.utc)
+    row.last_used_at = datetime.now(UTC)
     await session.flush()
     return row
 
 
-@presets_router.delete("/{preset_id}", status_code=status.HTTP_204_NO_CONTENT)
+@presets_router.delete("/{preset_id}", status_code=status.HTTP_204_NO_CONTENT,
+                       dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def delete_preset(preset_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     row = await session.get(LabPreset, preset_id)
     if row is None:

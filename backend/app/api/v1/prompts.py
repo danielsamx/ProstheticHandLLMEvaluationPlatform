@@ -9,13 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
 from app.domain.hand_spec import get_limit_profile
 from app.models.llm import LlmModel
 from app.models.prompts import (
     DynamicPromptTemplate,
-    SystemPromptVersion,
     EmgContextVersion,
+    SystemPromptVersion,
     TechnicalContextVersion,
 )
 from app.prompts import budget as prompt_budget
@@ -58,7 +59,8 @@ async def list_system_prompts(session: AsyncSession = Depends(get_session)):
     return list((await session.execute(stmt)).scalars().all())
 
 
-@router.post("/system", response_model=PromptVersionOut, status_code=status.HTTP_201_CREATED)
+@router.post("/system", response_model=PromptVersionOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def create_system_prompt(
     payload: SystemPromptIn, session: AsyncSession = Depends(get_session)
 ):
@@ -80,7 +82,8 @@ async def create_system_prompt(
     return row
 
 
-@router.post("/system/{version_id}/activate", response_model=PromptVersionOut)
+@router.post("/system/{version_id}/activate", response_model=PromptVersionOut,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def activate_system_prompt(
     version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ):
@@ -121,7 +124,8 @@ async def preview_generated_context(
 
 
 @router.post(
-    "/technical-context", response_model=TechnicalContextOut, status_code=status.HTTP_201_CREATED
+    "/technical-context", response_model=TechnicalContextOut, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))]
 )
 async def create_technical_context(
     payload: TechnicalContextIn, session: AsyncSession = Depends(get_session)
@@ -145,7 +149,8 @@ async def create_technical_context(
     return row
 
 
-@router.post("/technical-context/{version_id}/activate", response_model=TechnicalContextOut)
+@router.post("/technical-context/{version_id}/activate", response_model=TechnicalContextOut,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def activate_technical_context(
     version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ):
@@ -167,7 +172,8 @@ async def list_dynamic_templates(session: AsyncSession = Depends(get_session)):
 
 
 @router.post(
-    "/dynamic-templates", response_model=DynamicTemplateOut, status_code=status.HTTP_201_CREATED
+    "/dynamic-templates", response_model=DynamicTemplateOut, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))]
 )
 async def create_dynamic_template(
     payload: DynamicTemplateIn, session: AsyncSession = Depends(get_session)
@@ -220,7 +226,8 @@ async def preview_generated_emg_context():
 
 
 @router.post("/emg-context", response_model=EmgContextOut,
-             status_code=status.HTTP_201_CREATED)
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def create_emg_context(
     payload: EmgContextIn, session: AsyncSession = Depends(get_session)
 ):
@@ -241,7 +248,8 @@ async def create_emg_context(
     return row
 
 
-@router.post("/emg-context/{version_id}/activate", response_model=EmgContextOut)
+@router.post("/emg-context/{version_id}/activate", response_model=EmgContextOut,
+             dependencies=[Depends(require_permission(Permission.EDIT_PROMPTS))])
 async def activate_emg_context(
     version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ):
