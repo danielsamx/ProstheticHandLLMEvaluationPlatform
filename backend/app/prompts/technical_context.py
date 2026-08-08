@@ -55,8 +55,8 @@ from app.domain.hand_spec import (
 #: From here the version means what a researcher expects it to mean: 1.0 is the
 #: text this platform ships with, and anything above it is a change someone
 #: made deliberately and can be asked about.
-TECHNICAL_CONTEXT_VERSION: Final[str] = "1.1"
-TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - generated from manuals"
+TECHNICAL_CONTEXT_VERSION: Final[str] = "2.0"
+TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - multimodal control contract"
 
 #: The firmware's identifiers, spelled as the author's table spells them.
 _GESTURE_NAMES: Final[dict[str, str]] = {
@@ -130,6 +130,12 @@ Never exceed actuator limits.
 Never generate impossible poses.
 Avoid thumb-index collision.
 Maximum {SAFETY.max_simultaneous_actuators} actuator commands.
+Encoder policy
+Physical encoders take priority over simulated encoders.
+Do not move farther into an open or closed limit.
+Stale telemetry, a possible stall, or opposing motion forbids a new movement.
+no_action means no transmission and keeps the current position.
+STOP means intent=stop and serial_command=S, only for motion already in progress.
 """
 
 

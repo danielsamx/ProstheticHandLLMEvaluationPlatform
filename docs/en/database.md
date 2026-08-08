@@ -361,6 +361,7 @@ ORDER BY created_at DESC;
 | `0006_emg_context_block` | `emg_context_versions` and the fourth block on executions |
 | `0007_prompt_configurations` | `prompt_configurations`, deduplicated on the frozen digest |
 | `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
+| `0009_auth_myo_feedback` | Four-role accounts, authentication support and auditable gesture feedback |
 
 `0002` deletes existing windows and executions. A feature vector does not
 determine the waveform it came from, so back-filling a synthetic matrix would

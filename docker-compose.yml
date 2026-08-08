@@ -1,4 +1,4 @@
-services:
+﻿services:
   db:
     image: postgres:17-alpine
     container_name: phlab-db
@@ -45,7 +45,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      - "8081:8000"
     volumes:
       - ./backend:/app
     # One shell line per command, because YAML's `>` keeps the newlines of
@@ -81,3 +81,4 @@ services:
 
 volumes:
   pgdata:
+

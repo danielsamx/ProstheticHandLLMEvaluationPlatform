@@ -33,7 +33,10 @@ export interface HealthReport {
 
 export interface RunExecutionPayload {
   sampling_configuration_id: string;
+  invocation_mode?: 'structured_output' | 'tool_calling';
   window: EmgWindow;
+  mechanical_telemetry?: MechanicalTelemetry | null;
+  mvc_by_channel?: number[] | null;
   handedness: Handedness;
   system_prompt_version_id?: string | null;
   technical_context_version_id?: string | null;
@@ -57,6 +60,22 @@ export interface RunExecutionPayload {
   extra_parameters?: Record<string, unknown>;
   merge_context_into_system?: boolean;
   repetitions?: number;
+}
+
+export interface EncoderTelemetry {
+  actuator: string;
+  position: number;
+  minimum: number;
+  maximum: number;
+  velocity: number;
+  captured_at: string;
+}
+
+export interface MechanicalTelemetry {
+  actuators: EncoderTelemetry[];
+  received_at: string;
+  stale_after_ms: number;
+  stall_velocity_threshold: number;
 }
 
 /** Thin typed wrapper over the backend. No business logic lives here. */
@@ -299,5 +318,13 @@ export class ApiService {
     return this.http.post<{ replayed: boolean }>(
       `${this.base}/executions/${id}/replay-movement`, {},
     );
+  }
+
+  submitGestureFeedback(executionId: string, body: {
+    is_correct: boolean; score?: number | null; expected_gesture?: string | null;
+    observed_gesture?: string | null; notes?: string | null; source?: string;
+    sensor_snapshot?: Record<string, unknown>; auto_retry?: boolean; max_attempts?: number;
+  }): Observable<{ feedback: unknown; correction_execution_id: string | null; requires_confirmation: boolean }> {
+    return this.http.post<any>(`${this.base}/feedback/execution/${executionId}`, body);
   }
 }

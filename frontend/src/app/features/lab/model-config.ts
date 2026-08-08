@@ -119,6 +119,23 @@ import { LabStore } from '@core/services/lab.store';
         </div>
       }
 
+      <div class="flex items-center justify-between gap-4 border-y border-ink-200 py-3">
+        <div>
+          <div class="lab-label">Model invocation</div>
+          <p class="mt-0.5 text-[10px] text-ink-500">
+            Tool calls are parsed as requests and still pass all seven safety validation stages.
+          </p>
+        </div>
+        <div class="flex shrink-0 overflow-hidden rounded border border-navy text-xs font-semibold">
+          <button type="button" class="px-3 py-2" [class.bg-navy]="store.invocationMode() === 'structured_output'" [class.text-white]="store.invocationMode() === 'structured_output'" (click)="store.invocationMode.set('structured_output')">
+            Structured output
+          </button>
+          <button type="button" class="border-l border-navy px-3 py-2" [class.bg-navy]="store.invocationMode() === 'tool_calling'" [class.text-white]="store.invocationMode() === 'tool_calling'" (click)="store.invocationMode.set('tool_calling')">
+            Tool calling
+          </button>
+        </div>
+      </div>
+
       <!--
         The eight sampling parameters, four to a row.
 
@@ -227,7 +244,8 @@ import { LabStore } from '@core/services/lab.store';
           <label class="lab-label">Response Format</label>
           <mat-form-field appearance="outline" class="dense-field">
             <mat-select [ngModel]="store.responseFormat()"
-                        (ngModelChange)="store.responseFormat.set($event)">
+                        (ngModelChange)="store.responseFormat.set($event)"
+                        [disabled]="store.invocationMode() === 'tool_calling'">
               <mat-option value="text">text</mat-option>
               <mat-option value="json_object">json_object</mat-option>
               <mat-option value="json_schema"

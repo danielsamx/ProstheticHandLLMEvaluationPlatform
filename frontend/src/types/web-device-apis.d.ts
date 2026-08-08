@@ -56,7 +56,10 @@ interface Serial {
 // of SPP. A genuine alternative rather than a fallback: a build either offers
 // it or it does not.
 
-interface BluetoothRemoteGATTCharacteristic {
+interface BluetoothRemoteGATTCharacteristic extends EventTarget {
+  readonly value?: DataView;
+  startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+  stopNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
   writeValue(value: BufferSource): Promise<void>;
   writeValueWithoutResponse(value: BufferSource): Promise<void>;
 }

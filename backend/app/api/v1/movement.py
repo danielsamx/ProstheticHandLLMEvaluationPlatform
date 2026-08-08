@@ -9,14 +9,14 @@ with no inference in the way.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
-from app.domain.hand_spec import Handedness, LimitProfileId, get_limit_profile
+from app.domain.hand_spec import get_limit_profile
 from app.models.movement_log import MovementSource
+from app.models.user import User
 from app.schemas.api import ManualCommandIn, ManualCommandOut, MovementLogOut
 from app.services import movement_service
 from app.ws.emg_stream import publish_pose
@@ -26,7 +26,9 @@ router = APIRouter(prefix="/movement", tags=["movement"])
 
 @router.post("/send", response_model=ManualCommandOut)
 async def send_manual_command(
-    payload: ManualCommandIn, session: AsyncSession = Depends(get_session)
+    payload: ManualCommandIn,
+    _: User = Depends(require_permission(Permission.OPERATE_HARDWARE)),
+    session: AsyncSession = Depends(get_session)
 ) -> ManualCommandOut:
     """Validate a typed command and push it to the simulator.
 

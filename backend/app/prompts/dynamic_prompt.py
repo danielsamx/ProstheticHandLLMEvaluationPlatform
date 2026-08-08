@@ -33,7 +33,9 @@ from typing import Any, Final
 
 from app.domain.hand_spec import EMG_CHANNEL_SITES, Handedness
 from app.schemas.emg import EmgWindow
+from app.schemas.multimodal import MechanicalTelemetry
 from app.services.emg_features import downsample
+from app.services.semantic_serializer import serialize_multimodal_state
 
 
 class DynamicContent(str, Enum):
@@ -42,6 +44,7 @@ class DynamicContent(str, Enum):
     MATRIX = "matrix"
     FEATURES = "features"
     BOTH = "both"
+    SEMANTIC = "semantic"
 
 
 #: Every block starts at 1.0.
@@ -75,11 +78,22 @@ APPROX_TOKENS_PER_ROW: Final[float] = 41.0
 _MATRIX_TEMPLATE: Final[str] = "{matrix_block}"
 _FEATURES_TEMPLATE: Final[str] = "{feature_block}"
 _BOTH_TEMPLATE: Final[str] = "{matrix_block}\n\n{feature_block}"
+_SEMANTIC_TEMPLATE: Final[str] = """\
+MULTIMODAL SEMANTIC STATE (derived deterministically; ground truth is never included)
+{semantic_block}
+Follow control_recommendation and use only output-contract labels.
+For no_action set intent=no_action, gesture=null, commands=[], and serial_command="".
+Copy detected_pattern_hint when it is not unknown.
+Use intent=stop with serial_command="S" only to halt motion already in progress.
+Never use hold as intent, gesture, detected_pattern, or command.
+Never command motion farther into a limit or stall.
+"""
 
 TEMPLATES: Final[dict[DynamicContent, str]] = {
     DynamicContent.MATRIX: _MATRIX_TEMPLATE,
     DynamicContent.FEATURES: _FEATURES_TEMPLATE,
     DynamicContent.BOTH: _BOTH_TEMPLATE,
+    DynamicContent.SEMANTIC: _SEMANTIC_TEMPLATE,
 }
 
 #: The default remains the matrix alone: it is the condition the platform exists
@@ -233,6 +247,8 @@ def render_dynamic_prompt(
     subject_ref: str | None = None,
     subject_notes: str | None = None,
     extra_parameters: dict[str, Any] | None = None,
+    mechanical_telemetry: MechanicalTelemetry | None = None,
+    mvc_by_channel: list[float] | None = None,
     template: str | None = None,
     include_sites: bool = False,
     matrix_max_rows: int | None = DEFAULT_MATRIX_MAX_ROWS,
@@ -250,6 +266,10 @@ def render_dynamic_prompt(
     """
     mode = DynamicContent(content) if not isinstance(content, DynamicContent) else content
     custom = None if is_builtin_template(template) else template
+    if mode is DynamicContent.SEMANTIC and (
+        custom is None or "{semantic_block}" not in custom
+    ):
+        custom = None
     body = custom or TEMPLATES[mode]
 
     # Render only the blocks the body actually references.
@@ -272,7 +292,13 @@ def render_dynamic_prompt(
     # A custom template may reference fields no built-in one uses. `format_map`
     # with a forgiving mapping leaves an unknown placeholder as written instead
     # of raising, so one stale saved template cannot take down an execution.
-    return body.format_map(_Fields({
+    semantic_block = ""
+    if mode is DynamicContent.SEMANTIC:
+        semantic_block = serialize_multimodal_state(
+            window, mechanical_telemetry, mvc_by_channel=mvc_by_channel
+        ).model_dump_json(exclude_none=True)
+
+    rendered = body.format_map(_Fields({
         "matrix_block": matrix_block,
         "feature_block": feature_block,
         "matrix_rows": rendered_rows,
@@ -290,7 +316,9 @@ def render_dynamic_prompt(
         "extensor": window.extensor_activation,
         "flexor_ratio": window.flexor_ratio,
         "extra_parameters": extra_parameters or {},
+        "semantic_block": semantic_block,
     }))
+    return rendered
 
 
 class _Fields(dict):

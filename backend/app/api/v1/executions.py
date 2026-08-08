@@ -11,21 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
 from app.models.experiment import Execution
 from app.models.metrics import ExecutionMetric
+from app.models.movement_log import MovementSource
 from app.models.prompt_configuration import PromptConfiguration
+from app.models.user import User
 from app.models.validation import ValidationIssueRecord, ValidationResult
 from app.schemas.api import (
-    ExecutionOut,
     ConfigurationModelResult,
+    ExecutionOut,
     ExecutionStats,
     ModelSummary,
     PromptConfigurationOut,
     RunExecutionIn,
     RunExecutionOut,
 )
-from app.models.movement_log import MovementSource
 from app.services import movement_service
 from app.services.execution_service import ExecutionRequestError, run_execution
 from app.services.metrics_service import aggregate_determinism
@@ -35,7 +37,9 @@ router = APIRouter(prefix="/executions", tags=["executions"])
 
 
 @router.post("/run", response_model=RunExecutionOut, status_code=status.HTTP_201_CREATED)
-async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_session)):
+async def run(payload: RunExecutionIn,
+              user: User = Depends(require_permission(Permission.RUN_EXPERIMENTS)),
+              session: AsyncSession = Depends(get_session)):
     """Execute one independent experiment (optionally repeated N times).
 
     Repetitions share an identical prompt and configuration; the only thing that
@@ -56,6 +60,7 @@ async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_sessi
             execution = await run_execution(
                 session,
                 sampling_configuration_id=payload.sampling_configuration_id,
+                invocation_mode=payload.invocation_mode,
                 window=payload.window,
                 handedness=payload.handedness,
                 system_prompt_version_id=payload.system_prompt_version_id,
@@ -75,9 +80,12 @@ async def run(payload: RunExecutionIn, session: AsyncSession = Depends(get_sessi
                 subject_ref=payload.subject_ref,
                 subject_notes=payload.subject_notes,
                 extra_parameters=payload.extra_parameters,
+                mechanical_telemetry=payload.mechanical_telemetry,
+                mvc_by_channel=payload.mvc_by_channel,
                 merge_context_into_system=payload.merge_context_into_system,
                 repetition_index=index,
                 repetition_group=repetition_group,
+                triggered_by_id=user.id,
             )
         except ExecutionRequestError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

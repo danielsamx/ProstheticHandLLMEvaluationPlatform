@@ -105,7 +105,28 @@ def test_the_three_modes_produce_three_different_prompts():
         build_prompt(window, dynamic_content=mode).dynamic_prompt_sha256
         for mode in DynamicContent
     }
-    assert len(hashes) == 3
+    assert len(hashes) == 4
+
+
+def test_semantic_mode_rejects_legacy_blocks_but_keeps_compatible_saved_versions():
+    window = synthesise_window("rest", seed=4, samples=32)
+    legacy = build_prompt(
+        window, dynamic_content=DynamicContent.SEMANTIC,
+        system_prompt="Infer from one raw EMG matrix.",
+        technical_context="Old actuator context.",
+        emg_context="Evaluate jointly\n- RMS\n- MAV",
+    )
+    assert "raw EMG matrix" not in legacy.full_prompt
+    assert "- RMS" not in legacy.full_prompt
+
+    saved_system = SYSTEM_PROMPT + "Research note: semantic policy revision.\n"
+    saved_context = build_technical_context() + "Research note: Encoder policy revision.\n"
+    saved = build_prompt(
+        window, dynamic_content=DynamicContent.SEMANTIC,
+        system_prompt=saved_system, technical_context=saved_context,
+    )
+    assert saved.system_prompt == saved_system
+    assert saved.technical_context == saved_context
 
 
 def test_the_mode_and_the_row_count_are_recorded_on_the_prompt():
@@ -172,7 +193,7 @@ def test_system_prompt_states_behaviour_and_nothing_else():
     reasoning to block 3, so that each can be revised without reversioning the
     others."""
     lowered = SYSTEM_PROMPT.lower()
-    assert "exactly one valid json object" in lowered
+    assert "execute_handi_command exactly once" in lowered
     assert "markdown" in lowered
 
     # No hardware figures, no electrode names: those live in other blocks.
@@ -212,7 +233,7 @@ def test_the_response_shape_is_not_restated_in_the_prose():
     told one shape and constrained to another.
     """
     context = build_technical_context()
-    for field in ("serial_command", "confidence", "within_limits", '"hand"'):
+    for field in ("confidence", "within_limits", '"hand"'):
         assert field not in context
 
 

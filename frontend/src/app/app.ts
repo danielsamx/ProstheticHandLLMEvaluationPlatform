@@ -1,160 +1,110 @@
-import { Component, ChangeDetectionStrategy, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-
+import { AuthService } from '@core/services/auth.service';
 import { LabStore } from '@core/services/lab.store';
 import { SimulatorBridgeService } from '@core/services/simulator-bridge.service';
+import { LanguageService, TranslatePipe } from '@core/services/language.service';
 
 @Component({
   selector: 'ph-root',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatIconModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet],
+  imports: [MatIconModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet, TranslatePipe],
   template: `
     <div class="flex h-screen w-screen flex-col bg-white text-navy">
-      <!--
-        TopBar.
-        Height steps with the viewport so the logo can grow without crowding
-        the status chips: 64px on phones, 76px on tablets, 88px on desktop.
-        The bar is a grid rather than a flex row so the brand block cannot be
-        squeezed by the chips when they wrap.
-      -->
-      <header
-        class="grid h-16 shrink-0 grid-cols-[auto_1fr] items-center gap-3
-               bg-navy px-3 text-white sm:h-[76px] sm:gap-4 sm:px-5 lg:h-22 lg:px-6"
-      >
-        <!-- Brand -->
-        <div class="flex min-w-0 items-center gap-3 sm:gap-4">
+      <header class="shrink-0 border-b border-ink-200 bg-white">
+        <div class="flex h-[72px] items-center gap-4 px-3 sm:px-5 lg:px-7">
           @if (logoAvailable()) {
-            <!--
-              The asset is a 250x96 raster with a white background, not a
-              transparent mark, so it sits in a white plate rather than directly
-              on the navy where its own background would show as a grey block.
-
-              width/height carry the intrinsic pixels so the browser reserves
-              the correct box and never guesses the ratio; only the height is
-              constrained, leaving w-auto to preserve 250:96 exactly. At the
-              desktop step the plate renders it at 1:1, so no upscaling occurs
-              and the original resolution is what reaches the screen.
-            -->
             <img
-              src="assets/logo.png"
-              alt="Escuela Politécnica Nacional · Facultad de Ingeniería de Sistemas"
-              width="250"
-              height="96"
+              src="assets/logo-laboratorio-alan-turing.png"
+              alt="Escuela Politécnica Nacional y Laboratorio de Inteligencia y Visión Artificial Alan Turing"
+              width="1098"
+              height="234"
               decoding="async"
-              class="h-10 w-auto shrink-0 rounded-md bg-transparent shadow-sm
-                     sm:h-14 sm:p-2 lg:h-16"
+              class="h-11 w-auto max-w-[58%] shrink-0 object-contain object-left sm:h-13 lg:h-14"
               (error)="logoAvailable.set(false)"
             />
           }
-
-          <span class="hidden h-10 w-px bg-white/20 sm:block lg:h-12"></span>
-
-          <div class="min-w-0 leading-tight">
-            <h1 class="truncate text-sm font-semibold tracking-tight sm:text-base lg:text-lg">
-              <span class="sm:hidden">Prosthetic Hand LLM Lab</span>
-              <span class="hidden sm:inline">Prosthetic Hand LLM Evaluation Platform</span>
-            </h1>
-            <p class="hidden truncate text-[10px] uppercase tracking-widest text-white/60 sm:block lg:text-[11px]">
-              HANDi EPN V3 · EMG matrix → validated control commands
-            </p>
+          <span class="hidden h-10 w-px bg-ink-200 lg:block"></span>
+          <div class="hidden min-w-0 leading-tight lg:block">
+            <h1 class="truncate text-sm font-semibold text-navy">{{ 'Prosthetic hand evaluation platform' | tr }}</h1>
+            <p class="mt-1 truncate text-[11px] text-ink-500">HANDi EPN V3 · {{ 'EMG to commands validated by language models' | tr }}</p>
+          </div>
+          <div class="ml-auto flex shrink-0 items-center gap-1 text-navy">
+            <button type="button" class="mr-1 h-8 min-w-10 border-r border-ink-200 pr-2 text-xs font-bold" (click)="language.toggle()" [matTooltip]="language.current() === 'en' ? 'Cambiar a español' : 'Switch to English'">
+              {{ language.current() === 'en' ? 'ES' : 'EN' }}
+            </button>
+            @if (auth.user(); as user) {
+              <div class="mr-2 hidden text-right xl:block">
+                <p class="max-w-48 truncate text-xs font-semibold">{{ user.full_name }}</p>
+                <p class="text-[10px] uppercase text-ink-500">{{ user.role }}</p>
+              </div>
+            }
+            @if (auth.isAdmin()) {
+              <a routerLink="/users" class="grid h-9 w-9 place-items-center" [matTooltip]="'Manage users' | tr"><mat-icon>manage_accounts</mat-icon></a>
+            }
+            @if (auth.authenticated()) {
+              <button type="button" class="grid h-9 w-9 place-items-center" [matTooltip]="'Sign out' | tr" (click)="logout()"><mat-icon>logout</mat-icon></button>
+            } @else {
+              <a routerLink="/login" class="grid h-9 w-9 place-items-center" [matTooltip]="'Sign in' | tr"><mat-icon>login</mat-icon></a>
+            }
           </div>
         </div>
 
-        <!--
-          Navigation and status share the right-hand column. The links carry
-          icons so they survive the narrow breakpoint, where the labels drop.
-        -->
-        <div class="flex flex-wrap items-center justify-end gap-1.5 text-[11px] sm:gap-2">
-          <nav class="mr-1 flex overflow-hidden rounded-full bg-white/10">
+        <div class="flex h-11 items-stretch bg-navy px-2 text-white sm:px-5 lg:px-7">
+          <nav class="flex min-w-0 flex-1 items-stretch overflow-x-auto">
             @for (link of navigation; track link.path) {
-              <a [routerLink]="link.path"
-                 routerLinkActive="!bg-white !text-navy"
-                 class="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white/80 transition-colors hover:text-white"
-                 [matTooltip]="link.tooltip">
+              <a [routerLink]="link.path" routerLinkActive="!border-amber !text-white"
+                 class="flex shrink-0 items-center gap-2 border-b-[3px] border-transparent px-3 text-[11px] font-semibold text-white/70 transition-colors hover:text-white sm:px-4"
+                 [matTooltip]="language.text(link.tooltip)">
                 <mat-icon class="!h-4 !w-4 !text-[16px]">{{ link.icon }}</mat-icon>
-                <span class="hidden lg:inline">{{ link.label }}</span>
+                <span class="hidden sm:inline">{{ link.label | tr }}</span>
               </a>
             }
           </nav>
-
-          <span class="hidden h-5 w-px bg-white/20 sm:block"></span>
-
-          @if (store.handSpec(); as spec) {
-            <span class="lab-chip hidden bg-white/10 text-white lg:inline-flex"
-                  matTooltip="Independently commanded degrees of freedom">
-              {{ spec.driven_dof }} DOF
+          <div class="ml-2 flex shrink-0 items-center gap-3 border-l border-white/15 pl-3 text-[10px] text-white/75">
+            @if (store.lmStudio(); as lm) {
+              <span class="flex items-center gap-1.5" [matTooltip]="lm.reachable ? lm.models.length + ' modelo(s) disponibles' : 'LM Studio sin conexión'">
+                <span class="h-2 w-2 rounded-full" [class.bg-emerald-400]="lm.reachable" [class.bg-pink]="!lm.reachable"></span>
+                <span class="hidden lg:inline">LM Studio</span>
+              </span>
+            }
+            <span class="flex items-center gap-1.5" matTooltip="Conexión con el simulador">
+              <span class="h-2 w-2 rounded-full" [class.bg-emerald-400]="bridge.state() === 'open'" [class.bg-white]="bridge.state() !== 'open'"></span>
+              <span class="hidden lg:inline">{{ 'Simulator' | tr }}</span>
             </span>
-            <span class="lab-chip hidden bg-white/10 text-white xl:inline-flex"
-                  matTooltip="Rotary potentiometers on the physical hand">
-              {{ spec.potentiometer_count }} POT
-            </span>
-            <span class="lab-chip hidden bg-white/10 text-white xl:inline-flex"
-                  matTooltip="Fingertip force sensors">
-              {{ spec.fsr_count }} FSR
-            </span>
-          }
-
-          @if (store.lmStudio(); as lm) {
-            <span class="lab-chip"
-                  [class]="lm.reachable ? 'bg-amber text-navy' : 'bg-pink text-white'"
-                  [matTooltip]="lm.reachable
-                    ? lm.models.length + ' model(s) loaded at ' + lm.api_base
-                    : 'LM Studio unreachable at ' + lm.api_base">
-              <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">
-                {{ lm.reachable ? 'dns' : 'cloud_off' }}
-              </mat-icon>
-              <span class="hidden sm:inline">LM Studio</span>
-            </span>
-          }
-
-          <span class="lab-chip"
-                [class]="bridge.state() === 'open' ? 'bg-amber text-navy' : 'bg-white/10 text-white'"
-                matTooltip="Simulator movement feed">
-            <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">sensors</mat-icon>
-            <span class="hidden md:inline">{{ bridge.state() }}</span>
-          </span>
+          </div>
         </div>
       </header>
-
-      <main class="min-h-0 flex-1">
-        <router-outlet />
-      </main>
+      <main class="min-h-0 flex-1"><router-outlet /></main>
     </div>
   `,
 })
 export class App implements OnInit {
   protected readonly store = inject(LabStore);
   protected readonly bridge = inject(SimulatorBridgeService);
-
-  /** A broken-image glyph in the header reads worse than no logo at all. */
+  protected readonly auth = inject(AuthService);
+  protected readonly language = inject(LanguageService);
+  private readonly router = inject(Router);
   protected readonly logoAvailable = signal(true);
 
   protected readonly navigation = [
-    {
-      path: '/lab',
-      label: 'Laboratory',
-      icon: 'science',
-      tooltip: 'Configure and run one experiment',
-    },
-    {
-      path: '/dashboard',
-      label: 'Dashboard',
-      icon: 'insights',
-      tooltip: 'The accumulated experimental record',
-    },
-    {
-      path: '/logs',
-      label: 'Movement log',
-      icon: 'swap_horiz',
-      tooltip: 'Every command that reached the simulator or the prosthesis',
-    },
+    { path: '/lab', label: 'Laboratory', icon: 'science', tooltip: 'Configure and run an evaluation' },
+    { path: '/myo', label: 'Live Myo', icon: 'sensors', tooltip: 'Capture and preprocess Myo signals in real time' },
+    { path: '/dataset', label: 'Dataset', icon: 'dataset', tooltip: 'Build a labelled HANDi EMG dataset' },
+    { path: '/dashboard', label: 'Results', icon: 'insights', tooltip: 'Accumulated evaluation record' },
+    { path: '/logs', label: 'Movements', icon: 'swap_horiz', tooltip: 'Commands sent to the simulator or prosthesis' },
   ];
 
   ngOnInit(): void {
-    void this.store.bootstrap();
+    void this.auth.restore().finally(() => this.store.bootstrap());
+  }
+
+  protected logout(): void {
+    this.auth.logout();
+    void this.router.navigateByUrl('/login');
   }
 }

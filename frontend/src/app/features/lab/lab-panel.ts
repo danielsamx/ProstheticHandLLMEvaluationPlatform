@@ -14,6 +14,7 @@ import { EmgPanel } from './emg-panel';
 import { ModelConfig } from './model-config';
 import { PromptBlocks } from './prompt-blocks';
 import { ResultPanel } from './result-panel';
+import { TranslatePipe } from '@core/services/language.service';
 
 /** Left half of the screen: the model evaluation laboratory. */
 @Component({
@@ -22,7 +23,7 @@ import { ResultPanel } from './result-panel';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     MatButtonModule, MatExpansionModule, MatIconModule, MatProgressBarModule,
-    MatTooltipModule, RouterLink, EmgPanel, ModelConfig, PromptBlocks, ResultPanel,
+    MatTooltipModule, RouterLink, EmgPanel, ModelConfig, PromptBlocks, ResultPanel, TranslatePipe,
   ],
   template: `
     <div class="flex h-full flex-col">
@@ -46,27 +47,27 @@ import { ResultPanel } from './result-panel';
             <mat-expansion-panel-header>
               <mat-panel-title class="!text-xs !font-semibold">
                 <mat-icon class="!mr-2 !h-4 !w-4 !text-[16px] text-pink">tune</mat-icon>
-                Model &amp; decoding
+                {{ '1. EMG signal · 8 channels' | tr }}
               </mat-panel-title>
             </mat-expansion-panel-header>
-            <ph-model-config />
+            <ph-emg-panel />
           </mat-expansion-panel>
 
           <mat-expansion-panel expanded>
             <mat-expansion-panel-header>
               <mat-panel-title class="!text-xs !font-semibold">
                 <mat-icon class="!mr-2 !h-4 !w-4 !text-[16px] text-pink">monitor_heart</mat-icon>
-                EMG input &middot; 8 channels
+                {{ '2. Model and parameters' | tr }}
               </mat-panel-title>
             </mat-expansion-panel-header>
-            <ph-emg-panel />
+            <ph-model-config />
           </mat-expansion-panel>
 
           <mat-expansion-panel>
             <mat-expansion-panel-header>
               <mat-panel-title class="!text-xs !font-semibold">
                 <mat-icon class="!mr-2 !h-4 !w-4 !text-[16px] text-pink">article</mat-icon>
-                Prompt blocks
+                {{ '3. Evaluation prompt' | tr }}
               </mat-panel-title>
             </mat-expansion-panel-header>
             <ph-prompt-blocks />
@@ -76,7 +77,7 @@ import { ResultPanel } from './result-panel';
             <mat-expansion-panel-header>
               <mat-panel-title class="!text-xs !font-semibold">
                 <mat-icon class="!mr-2 !h-4 !w-4 !text-[16px] text-pink">fact_check</mat-icon>
-                Result
+                {{ '4. Result' | tr }}
               </mat-panel-title>
             </mat-expansion-panel-header>
             <ph-result-panel />
@@ -100,33 +101,33 @@ import { ResultPanel } from './result-panel';
             color="primary"
             class="!h-11 !flex-1 !text-sm !font-semibold"
             [disabled]="!store.canRun()"
-            [matTooltip]="store.blockingReason() ?? 'Run one independent experiment'"
+            [matTooltip]="store.blockingReason() ?? 'Run one independent evaluation'"
             (click)="store.runEvaluation()"
           >
             <mat-icon>play_arrow</mat-icon>
-            {{ store.running() ? 'Running…' : 'Run Evaluation' }}
+            {{ (store.running() ? 'Running…' : 'Run evaluation') | tr }}
             @if (store.repetitions() > 1) {
               <span class="ml-1 text-[11px] opacity-80">&times;{{ store.repetitions() }}</span>
             }
           </button>
 
           <button mat-stroked-button class="!h-11 !px-4"
-                  matTooltip="Save this exact model and parameter set so you can apply it to every model in a comparison"
+                  matTooltip="Save this model and its parameters for reuse"
                   [disabled]="!store.selectedModelId()"
                   (click)="saveConfiguration()">
             <mat-icon>bookmark_add</mat-icon>
-            <span class="ml-1 hidden text-[12px] font-semibold lg:inline">Save setup</span>
+            <span class="ml-1 hidden text-[12px] font-semibold lg:inline">{{ 'Save configuration' | tr }}</span>
           </button>
         </div>
 
         <div class="mt-2 flex items-center justify-between text-[10px] text-ink-500">
           <span>
-            Each run is an independent experiment &mdash; no conversation, no memory.
+            Each run is an independent experiment, with no conversation or previous memory.
           </span>
           <a routerLink="/dashboard"
              class="flex items-center gap-1 font-semibold text-ink-500 hover:text-pink">
             <mat-icon class="!h-3.5 !w-3.5 !text-[14px]">insights</mat-icon>
-            View the record
+            {{ 'View results' | tr }}
           </a>
         </div>
       </footer>

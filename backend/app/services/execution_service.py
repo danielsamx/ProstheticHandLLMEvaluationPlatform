@@ -46,6 +46,7 @@ from app.models.validation import ExecutionError, ValidationIssueRecord, Validat
 from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
+from app.schemas.multimodal import MechanicalTelemetry
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services import prompt_configuration_service
@@ -67,6 +68,7 @@ async def run_execution(
     session: AsyncSession,
     *,
     sampling_configuration_id: uuid.UUID,
+    invocation_mode: str = "structured_output",
     window: EmgWindow,
     handedness: Handedness = Handedness.RIGHT,
     system_prompt_version_id: uuid.UUID | None = None,
@@ -87,6 +89,8 @@ async def run_execution(
     subject_ref: str | None = None,
     subject_notes: str | None = None,
     extra_parameters: dict[str, Any] | None = None,
+    mechanical_telemetry: MechanicalTelemetry | None = None,
+    mvc_by_channel: list[float] | None = None,
     merge_context_into_system: bool = True,
     repetition_index: int = 0,
     repetition_group: str | None = None,
@@ -176,6 +180,8 @@ async def run_execution(
         subject_ref=subject_ref,
         subject_notes=subject_notes,
         extra_parameters=extra_parameters,
+        mechanical_telemetry=mechanical_telemetry,
+        mvc_by_channel=mvc_by_channel,
         merge_context_into_system=merge_context_into_system,
     )
 
@@ -228,7 +234,10 @@ async def run_execution(
         stop_sequences=list(config.stop_sequences or []),
         response_format=config.response_format,
         reasoning_mode=(config.extra_params or {}).get("reasoning_effort"),
-        custom_parameters=dict(config.extra_params or {}),
+        custom_parameters={
+            **dict(config.extra_params or {}),
+            **dict(extra_parameters or {}),
+        },
         app_version=settings.app_version,
         **origin.as_origin(),
         handedness=handedness.value,
@@ -317,6 +326,7 @@ async def run_execution(
             # stage, where it would already have cost a wasted execution.
             response_format_mode=config.response_format,
             json_schema=response_json_schema(),
+            invocation_mode=invocation_mode,
         )
     except LlmCallError as exc:
         execution.status = (
@@ -405,6 +415,13 @@ async def run_execution(
     # What the runtime actually accepted, which may differ from what was asked.
     # Two runs are only comparable if this matches.
     execution.response_format = call.effective_response_format
+    execution.custom_parameters = {
+        **dict(execution.custom_parameters or {}),
+        "invocation_mode": call.invocation_mode,
+        "tool_name": call.tool_name,
+        "tool_call_id": call.tool_call_id,
+        "tool_arguments": call.tool_arguments,
+    }
 
     log(LogLevel.INFO, "provider",
         f"Model responded in {call.latency_ms} ms.",
@@ -414,16 +431,21 @@ async def run_execution(
         cost_usd=call.cost_usd)
 
     if call.content_channel != "content":
+        if call.content_channel == "tool_calls":
+            log(LogLevel.INFO, "provider",
+                "The model requested the HANDi command through a native tool call.",
+                tool_name=call.tool_name, tool_call_id=call.tool_call_id)
+        else:
         # A reasoning model that answered only on its thinking channel. The
         # answer is usable — it was recovered — but the deviation belongs in the
         # record: without this line the run looks like any other, and a model
         # that never fills `content` would be silently indistinguishable from
         # one that does.
-        log(LogLevel.WARNING, "provider",
-            f"The reply arrived on '{call.content_channel}' rather than "
-            "'content'. This runtime splits reasoning from the answer, and this "
-            "model put the whole answer on the reasoning channel.",
-            channel=call.content_channel)
+            log(LogLevel.WARNING, "provider",
+                f"The reply arrived on '{call.content_channel}' rather than "
+                "'content'. This runtime splits reasoning from the answer, and this "
+                "model put the whole answer on the reasoning channel.",
+                channel=call.content_channel)
 
     if call.format_downgraded:
         log(LogLevel.WARNING, "provider",
@@ -655,4 +677,3 @@ def _stage_to_category(stage: str) -> str:
         "safety": ErrorCategory.SAFETY.value,
     }
     return mapping.get(stage, ErrorCategory.INTERNAL.value)
-

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.hand_spec import Handedness, LimitProfileId
 from app.prompts.dynamic_prompt import DynamicContent
 from app.schemas.emg import EmgWindow
+from app.schemas.multimodal import MechanicalTelemetry
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Providers & models
@@ -215,6 +216,8 @@ class PromptPreviewIn(BaseModel):
     """
 
     window: EmgWindow
+    mechanical_telemetry: MechanicalTelemetry | None = None
+    mvc_by_channel: list[float] | None = Field(default=None, min_length=8, max_length=8)
     handedness: Handedness = Handedness.RIGHT
     #: Supplied so the preview can compare against that model's context window.
     model_id: uuid.UUID | None = None
@@ -285,7 +288,10 @@ class RunExecutionIn(BaseModel):
     #: create two ways to say which model runs, and therefore a way for them to
     #: disagree.
     sampling_configuration_id: uuid.UUID
+    invocation_mode: Literal["structured_output", "tool_calling"] = "structured_output"
     window: EmgWindow
+    mechanical_telemetry: MechanicalTelemetry | None = None
+    mvc_by_channel: list[float] | None = Field(default=None, min_length=8, max_length=8)
     handedness: Handedness = Handedness.RIGHT
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
@@ -417,6 +423,7 @@ class ExecutionOut(BaseModel):
     experiment_type: str
     raw_response: str | None = None
     parsed_response: dict[str, Any] | None = None
+    custom_parameters: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

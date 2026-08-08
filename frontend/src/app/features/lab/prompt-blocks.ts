@@ -22,7 +22,7 @@ import { firstValueFrom } from 'rxjs';
  * variable.
  *
  * Three frozen blocks rather than one because they answer different kinds of
- * question and are revised on different schedules — behaviour, hardware, and
+ * question and are revised on different schedules: behaviour, hardware, and
  * how to read EMG. Each can be varied while the other two stay byte-identical,
  * which is the only way an effect can be attributed to one of them.
  */
@@ -36,7 +36,7 @@ import { firstValueFrom } from 'rxjs';
   ],
   template: `
     <mat-tab-group class="prompt-tabs" [animationDuration]="'120ms'">
-      <!-- ── Block 1: System Prompt ──────────────────────────────────────── -->
+      <!-- â”€â”€ Block 1: System Prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <mat-tab>
         <ng-template mat-tab-label>
           <span class="text-[11px]">1 &middot; System</span>
@@ -78,7 +78,7 @@ import { firstValueFrom } from 'rxjs';
         </div>
       </mat-tab>
 
-      <!-- ── Block 2: Technical Context ──────────────────────────────────── -->
+      <!-- â”€â”€ Block 2: Technical Context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <mat-tab>
         <ng-template mat-tab-label>
           <span class="text-[11px]">2 &middot; Technical Context</span>
@@ -125,10 +125,10 @@ import { firstValueFrom } from 'rxjs';
         </div>
       </mat-tab>
 
-      <!-- ── Block 3: EMG knowledge context ──────────────────────────────── -->
+      <!-- â”€â”€ Block 3: EMG knowledge context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <mat-tab>
         <ng-template mat-tab-label>
-          <span class="text-[11px]">3 · EMG Knowledge</span>
+          <span class="text-[11px]">3 - sEMG Semantics</span>
           @if (store.dirtyEmgContext()) {
             <span class="ml-1 h-1.5 w-1.5 rounded-full bg-amber"></span>
           }
@@ -141,14 +141,14 @@ import { firstValueFrom } from 'rxjs';
                           (ngModelChange)="selectEmgContext($event)">
                 @for (v of store.emgContexts(); track v.id) {
                   <mat-option [value]="v.id">
-                    {{ v.name }} · v{{ v.version }}
+                    {{ v.name }} - v{{ v.version }}
                     @if (v.is_active) { <span class="text-navy">&nbsp;(active)</span> }
                   </mat-option>
                 }
               </mat-select>
             </mat-form-field>
             <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
-                    matTooltip="Regenerate from the domain, so the electrode map matches the one the feature extractor groups by."
+                    matTooltip="Restore the canonical semantic sEMG decision policy."
                     (click)="store.regenerateEmgContextFromDomain()">
               <mat-icon class="!h-4 !w-4 !text-[16px]">autorenew</mat-icon> Regenerate
             </button>
@@ -166,19 +166,17 @@ import { firstValueFrom } from 'rxjs';
             (ngModelChange)="store.emgContextDraft.set($event)"></textarea>
 
           <p class="text-[10px] text-ink-500">
-            How the eight channels should be read. Separate from block 2 because
-            "what can this hand do" is a fact about hardware, while "is
-            co-contraction a stop or physiological coactivation" is a
-            methodological position — and revising the second should not
-            reversion the first.
+            Rules for interpreting the normalized semantic state produced by
+            preprocessing. This block does not receive raw samples or legacy
+            RMS, MAV, ZC, SSC and WL tables.
           </p>
         </div>
       </mat-tab>
 
-      <!-- ── Block 4: Dynamic Prompt template ────────────────────────────── -->
+      <!-- â”€â”€ Block 4: Dynamic Prompt template â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <mat-tab>
         <ng-template mat-tab-label>
-          <span class="text-[11px]">4 · Dynamic</span>
+          <span class="text-[11px]">4 - Dynamic</span>
           @if (store.dirtyTemplate()) {
             <span class="ml-1 h-1.5 w-1.5 rounded-full bg-amber"></span>
           }
@@ -189,9 +187,9 @@ import { firstValueFrom } from 'rxjs';
             <mat-form-field appearance="outline" class="dense-field !flex-1">
               <mat-select [ngModel]="store.selectedTemplateId()"
                           (ngModelChange)="selectTemplate($event)">
-                @for (v of store.dynamicTemplates(); track v.id) {
+                @for (v of store.visibleDynamicTemplates(); track v.id) {
                   <mat-option [value]="v.id">
-                    {{ v.name }} · v{{ v.version }}
+                    {{ v.name }} - v{{ v.version }}
                     @if (v.is_active) { <span class="text-navy">&nbsp;(active)</span> }
                   </mat-option>
                 }
@@ -212,12 +210,11 @@ import { firstValueFrom } from 'rxjs';
 
           <p class="text-[10px] text-ink-500">
             The template, not the content. Placeholders are substituted per run:
-            <span class="lab-mono">{{ '{hand}' }}</span>,
-            <span class="lab-mono">{{ '{matrix_block}' }}</span>,
-            <span class="lab-mono">{{ '{feature_block}' }}</span>,
+            <span class="lab-mono">{{ '{semantic_block}' }}</span>,
             <span class="lab-mono">{{ '{sample_count}' }}</span>,
-            <span class="lab-mono">{{ '{mean_rms}' }}</span>. Removing one removes
-            that information from every prompt.
+            <span class="lab-mono">{{ '{window_ms}' }}</span> and
+            <span class="lab-mono">{{ '{source_mode}' }}</span>. The semantic block
+            contains the processed sEMG state, encoder positions and conflicts.
           </p>
 
           <div class="flex items-center justify-between border-t border-ink-200 pt-2">
@@ -226,7 +223,7 @@ import { firstValueFrom } from 'rxjs';
                     [disabled]="store.previewLoading()"
                     (click)="store.refreshPreview()">
               <mat-icon class="!h-4 !w-4 !text-[16px]">visibility</mat-icon>
-              Preview · count tokens
+              Preview - count tokens
             </button>
           </div>
 
@@ -253,7 +250,7 @@ import { firstValueFrom } from 'rxjs';
               <span class="ml-auto text-ink-400">
                 {{ preview.dynamic_content }}
                 @if (preview.matrix_rows_sent) {
-                  · {{ preview.matrix_rows_sent }} of {{ store.sampleCount() }} rows
+                  - {{ preview.matrix_rows_sent }} of {{ store.sampleCount() }} rows
                 }
               </span>
               <button class="ml-2 text-ink-400 hover:text-pink"
@@ -272,7 +269,7 @@ import { firstValueFrom } from 'rxjs';
               The token budget, as four cards.
 
               Each block gets its own colour so the eye can go straight to the
-              one that dominates without reading four numbers first — on a real
+              one that dominates without reading four numbers first. On a real
               recording the dynamic block is an order of magnitude larger than
               the other two, and that is the whole story of whether a prompt
               fits.
@@ -364,7 +361,7 @@ export class PromptBlocks {
   protected async saveTemplate(): Promise<void> {
     const result = await this.ask({
       title: 'Save a new dynamic template version',
-      hint: 'This controls how the EMG window is rendered — the only block that '
+      hint: 'This controls how the semantic state is rendered. It is the only block that '
           + 'changes between runs. Alternative renderings are a legitimate '
           + 'experimental variable.',
       name: 'Custom dynamic template',
@@ -398,7 +395,7 @@ export class PromptBlocks {
   }): { label: string; value: string; icon: string; tone: string; hint: string }[] {
     const b = preview.token_breakdown ?? {};
     const total = preview.estimated_prompt_tokens;
-    const share = (n: number) => (total ? ` · ${Math.round((n / total) * 100)}% of the prompt` : '');
+    const share = (n: number) => (total ? ` - ${Math.round((n / total) * 100)}% of the prompt` : '');
 
     return [
       {
@@ -406,7 +403,7 @@ export class PromptBlocks {
         value: String(b['system_prompt'] ?? 0),
         icon: 'psychology',
         tone: 'bg-navy/5 text-navy',
-        hint: 'Block 1 — behaviour and output discipline. Identical on every run.'
+        hint: 'Block 1: behaviour and output discipline. Identical on every run.'
           + share(b['system_prompt'] ?? 0),
       },
       {
@@ -414,15 +411,15 @@ export class PromptBlocks {
         value: String(b['technical_context'] ?? 0),
         icon: 'precision_manufacturing',
         tone: 'bg-navy/10 text-navy',
-        hint: 'Block 2 — the hand: actuators, gestures, protocol, safety. Identical on every run.'
+        hint: 'Block 2: the hand, actuators, gestures, protocol and safety. Identical on every run.'
           + share(b['technical_context'] ?? 0),
       },
       {
-        label: 'EMG rules',
+        label: 'sEMG policy',
         value: String(b['emg_context'] ?? 0),
         icon: 'biotech',
         tone: 'bg-navy/[0.15] text-navy',
-        hint: 'Block 3 — the electrode map and how to reason about it. Frozen, '
+        hint: 'Block 3: the semantic sEMG decision policy. Frozen, '
           + 'and changing it changes what the model concludes from the same signal.'
           + share(b['emg_context'] ?? 0),
       },
@@ -431,7 +428,7 @@ export class PromptBlocks {
         value: String(b['dynamic_prompt'] ?? 0),
         icon: 'monitor_heart',
         tone: 'bg-pink/10 text-pink',
-        hint: 'Block 4 — the EMG for this run. The only block that changes, and usually the largest.'
+        hint: 'Block 4: semantic sEMG and encoder state for this run. The only block that changes.'
           + share(b['dynamic_prompt'] ?? 0),
       },
       {
@@ -440,7 +437,7 @@ export class PromptBlocks {
         icon: preview.fits_context ? 'check_circle' : 'error_outline',
         tone: preview.fits_context ? 'bg-amber/20 text-navy' : 'bg-pink text-white',
         hint: preview.context_window
-          ? 'The context the model was loaded with — not what its architecture supports.'
+          ? 'The context the model was loaded with, not what its architecture supports.'
           : 'Select a model to compare this against its context window.',
       },
     ];

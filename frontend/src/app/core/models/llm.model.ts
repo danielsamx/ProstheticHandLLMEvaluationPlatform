@@ -129,7 +129,7 @@ export interface ValidationResult {
 }
 
 /** What the dynamic prompt block carries for a given execution. */
-export type DynamicContent = 'matrix' | 'features' | 'both';
+export type DynamicContent = 'matrix' | 'features' | 'both' | 'semantic';
 
 export interface ExecutionMetrics {
   is_valid_json: boolean;
@@ -181,6 +181,7 @@ export interface Execution {
   experiment_type: string;
   raw_response: string | null;
   parsed_response: Record<string, unknown> | null;
+  custom_parameters: Record<string, unknown>;
   latency_ms: number | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
