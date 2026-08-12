@@ -123,6 +123,47 @@ class LlmCallResult:
     tool_arguments: dict[str, Any] | None = None
 
 
+#: Appended to the user turn in tool mode, never to the frozen blocks.
+#:
+#: The frozen technical context documents the structured response as "JSON
+#: only". In tool mode that competes with the provider's tool template, and
+#: capable models put the same arguments in assistant content instead of in the
+#: call. The scientific prompt stays frozen; the response *channel* is an
+#: invocation detail and is stated here, where it is still auditable because it
+#: travels in the recorded messages.
+TOOL_INSTRUCTION: str = (
+    "\n\nTOOL INVOCATION REQUIREMENT\n"
+    "You must respond by calling execute_handi_command exactly once. "
+    "Put the complete decision in the function arguments. Do not emit "
+    "the JSON as assistant text and do not add prose."
+)
+
+
+def _with_tool_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy the messages, adding the tool instruction to the last turn.
+
+    The user turn is multimodal: a list of typed parts, the feature table plus
+    the picture. Concatenating a string onto that list raised ``TypeError`` and
+    took down every tool-calling run — the branch was written when the turn was
+    always a string, and nothing failed until the image flow made it a list.
+
+    On a list the instruction becomes its own text part, appended after the
+    image, so the last thing the model reads is still how it must answer. The
+    string branch stays for a turn that carries no picture.
+    """
+    copied = [dict(message) for message in messages]
+    if not copied:
+        return copied
+
+    content = copied[-1].get("content", "")
+    copied[-1]["content"] = (
+        [*content, {"type": "text", "text": TOOL_INSTRUCTION}]
+        if isinstance(content, list)
+        else content + TOOL_INSTRUCTION
+    )
+    return copied
+
+
 def build_model_string(litellm_prefix: str, model_key: str) -> str:
     """``lm_studio`` + ``qwen2.5-7b-instruct`` -> ``lm_studio/qwen2.5-7b-instruct``."""
     prefix = (litellm_prefix or "").strip().strip("/")
@@ -236,22 +277,7 @@ async def call_llm(
     if invocation_mode == "tool_calling":
         if not json_schema:
             raise ValueError("Tool calling requires a JSON schema.")
-        # The frozen technical context also documents the legacy structured
-        # response as "JSON only". In tool mode that otherwise competes with
-        # the provider's tool template and capable models may place the same
-        # arguments in assistant content. Keep the scientific prompt frozen,
-        # but append an invocation-specific instruction to the user turn so
-        # the requested response channel is unambiguous and auditable.
-        tool_instruction = (
-            "\n\nTOOL INVOCATION REQUIREMENT\n"
-            "You must respond by calling execute_handi_command exactly once. "
-            "Put the complete decision in the function arguments. Do not emit "
-            "the JSON as assistant text and do not add prose."
-        )
-        tool_messages = [dict(message) for message in messages]
-        if tool_messages:
-            tool_messages[-1]["content"] = tool_messages[-1].get("content", "") + tool_instruction
-        kwargs["messages"] = tool_messages
+        kwargs["messages"] = _with_tool_instruction(messages)
         kwargs["tools"] = [{"type": "function", "function": {
             "name": "execute_handi_command",
             "description": "Request one HANDi EPN V3 command. The platform validates every argument before movement.",

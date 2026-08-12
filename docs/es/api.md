@@ -297,7 +297,7 @@ ejecuciones y 100% de trescientas son afirmaciones distintas.
 ### `GET /executions/configurations`
 
 Una fila por cada combinación distinta de los tres bloques congelados, con clave en
-`frozen_context_sha256`. Cada una lleva su etiqueta (`S1.0 · T1.1 · E1.1`), las
+`frozen_context_sha256`. Cada una lleva su etiqueta (`S1.0 · T1.0 · E1.0`), las
 tres versiones de bloque, el texto congelado tal como estaba, `first_used_at` /
 `last_used_at`, y `by_model`: los resultados desglosados por modelo, porque una
 configuración solo es comparable dentro de uno.

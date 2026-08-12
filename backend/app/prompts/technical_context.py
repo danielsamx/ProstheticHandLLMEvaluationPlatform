@@ -55,8 +55,25 @@ from app.domain.hand_spec import (
 #: From here the version means what a researcher expects it to mean: 1.0 is the
 #: text this platform ships with, and anything above it is a change someone
 #: made deliberately and can be asked about.
-TECHNICAL_CONTEXT_VERSION: Final[str] = "2.0"
+TECHNICAL_CONTEXT_VERSION: Final[str] = "1.0"
 TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - multimodal control contract"
+
+#: The reduced variant, for the envelope-image flow.
+#:
+#: A separate artefact rather than a flag on the full one, because the two are
+#: not versions of the same text: they describe different capability sets. An
+#: execution run under "the hand can do fourteen gestures and six actuators" is
+#: not comparable to one run under "the hand opens and closes", and keeping them
+#: distinct means the prompt-configuration table shows two rows instead of
+#: hiding the difference inside one.
+#:
+#: The actuator table is gone from it, not merely unmentioned. If the answer can
+#: only be O, C or no_action, then six ranges of positions are context spent on
+#: a vocabulary the model is not allowed to use - and worse, an invitation to
+#: use it. The encoder policy stays, because it governs whether a movement may
+#: happen at all, which is as true of opening as of anything else.
+TECHNICAL_CONTEXT_OPEN_CLOSE_VERSION: Final[str] = "1.0"
+TECHNICAL_CONTEXT_OPEN_CLOSE_NAME: Final[str] = "HANDi EPN V3 - open and close only"
 
 #: The firmware's identifiers, spelled as the author's table spells them.
 _GESTURE_NAMES: Final[dict[str, str]] = {
@@ -136,6 +153,44 @@ Do not move farther into an open or closed limit.
 Stale telemetry, a possible stall, or opposing motion forbids a new movement.
 no_action means no transmission and keeps the current position.
 STOP means intent=stop and serial_command=S, only for motion already in progress.
+"""
+
+
+def build_technical_context_open_close() -> str:
+    """The hand, described only as far as opening and closing.
+
+    Deliberately short. The whole point of the reduced vocabulary is that the
+    model has three possible answers, and a block that spent four hundred tokens
+    describing fourteen gestures and six actuator ranges would be teaching a
+    vocabulary the validator then rejects — which is the exact failure the
+    generated-from-domain rule exists to prevent, arrived at from the other
+    direction.
+
+    The gesture letters are still read from :mod:`app.domain`, so if the
+    firmware ever renames OPEN or CLOSE this text follows.
+    """
+    letters = {gesture.name: command.value for command, gesture in GESTURES.items()}
+    open_cmd = letters.get("OPEN", "O")
+    close_cmd = letters.get("CLOSE", "C")
+
+    return f"""\
+Supported commands
+{open_cmd} OPEN   fully open the hand
+{close_cmd} CLOSE  fully close the hand
+no_action      do not move
+These three are the only permitted answers.
+Command format
+A single uppercase letter.
+Never combine commands.
+Never send actuator positions.
+Safety
+Never generate impossible poses.
+{close_cmd} alone means CLOSE. It is never a finger position.
+Encoder policy
+Physical encoders take priority over simulated encoders.
+Do not move farther into an open or closed limit.
+Stale telemetry, a possible stall, or opposing motion forbids a new movement.
+no_action means no transmission and keeps the current position.
 """
 
 

@@ -20,10 +20,30 @@ export class AuthService {
   token(): string | null { return localStorage.getItem(this.key); }
   can(permission: string): boolean { return this.user()?.permissions.includes(permission) ?? false; }
 
+  /**
+   * The in-flight restore, so the guard can wait for it instead of racing it.
+   *
+   * Without this the guard has a bug that only shows on a hard refresh: the
+   * token is in localStorage, `restore()` has been started but has not
+   * returned, `user()` is still null, and the guard sends an authenticated
+   * researcher to the login screen. Memoised rather than re-issued, because a
+   * guard on every route would otherwise fire one `/auth/me` per navigation.
+   */
+  private restoring: Promise<void> | null = null;
+
+  /** False until the token in storage has been exchanged for a user, or failed. */
+  readonly resolved = signal(false);
+
   async restore(): Promise<void> {
-    if (!this.token()) return;
+    this.restoring ??= this.doRestore();
+    return this.restoring;
+  }
+
+  private async doRestore(): Promise<void> {
+    if (!this.token()) { this.resolved.set(true); return; }
     try { this.user.set(await firstValueFrom(this.http.get<AppUser>(`${environment.apiBase}/auth/me`))); }
     catch { this.logout(); }
+    finally { this.resolved.set(true); }
   }
   async login(email: string, password: string): Promise<void> {
     const result = await firstValueFrom(this.http.post<TokenResponse>(`${environment.apiBase}/auth/login`, { email, password }));
@@ -35,5 +55,12 @@ export class AuthService {
     }));
     await this.login(email, password);
   }
-  logout(): void { localStorage.removeItem(this.key); this.user.set(null); }
+  logout(): void {
+    localStorage.removeItem(this.key);
+    this.user.set(null);
+    // Cleared so a subsequent login on the same page load restores cleanly
+    // rather than replaying the memoised failure of the previous session.
+    this.restoring = null;
+    this.resolved.set(true);
+  }
 }

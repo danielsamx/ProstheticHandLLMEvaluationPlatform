@@ -625,7 +625,7 @@ produjo. Se deduplica al escribir, sobre
   `last_used_at`.
 
 Una configuración lleva la etiqueta que usted ve en la interfaz
-(`S1.0 · T1.1 · E1.1`), las tres versiones de bloque, y el texto congelado
+(`S1.0 · T1.0 · E1.0`), las tres versiones de bloque, y el texto congelado
 completo tal como estaba — para que un resultado siga siendo legible después de que
 los bloques hayan avanzado.
 

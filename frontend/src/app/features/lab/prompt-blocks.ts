@@ -176,47 +176,23 @@ import { firstValueFrom } from 'rxjs';
       <!-- â”€â”€ Block 4: Dynamic Prompt template â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
       <mat-tab>
         <ng-template mat-tab-label>
-          <span class="text-[11px]">4 - Dynamic</span>
-          @if (store.dirtyTemplate()) {
-            <span class="ml-1 h-1.5 w-1.5 rounded-full bg-amber"></span>
-          }
+          <!--
+            No dirty marker. The tab holds nothing editable any more: the user
+            turn is generated, so there is no draft that can diverge from a
+            saved version.
+          -->
+          <span class="text-[11px]">4 - Stimulus</span>
         </ng-template>
 
         <div class="space-y-2 pt-3">
-          <div class="flex items-center gap-2">
-            <mat-form-field appearance="outline" class="dense-field !flex-1">
-              <mat-select [ngModel]="store.selectedTemplateId()"
-                          (ngModelChange)="selectTemplate($event)">
-                @for (v of store.visibleDynamicTemplates(); track v.id) {
-                  <mat-option [value]="v.id">
-                    {{ v.name }} - v{{ v.version }}
-                    @if (v.is_active) { <span class="text-navy">&nbsp;(active)</span> }
-                  </mat-option>
-                }
-              </mat-select>
-            </mat-form-field>
-            <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
-                    [disabled]="!store.dirtyTemplate()"
-                    (click)="saveTemplate()">
-              <mat-icon class="!h-4 !w-4 !text-[16px]">save</mat-icon> Save
-            </button>
-          </div>
+          <!--
+            No template selector and no editor.
 
-          <textarea
-            class="lab-mono h-40 w-full resize-none rounded border border-ink-200 bg-white p-2.5 text-[11px] leading-relaxed"
-            spellcheck="false"
-            [ngModel]="store.dynamicTemplateDraft()"
-            (ngModelChange)="store.dynamicTemplateDraft.set($event)"></textarea>
-
-          <p class="text-[10px] text-ink-500">
-            The template, not the content. Placeholders are substituted per run:
-            <span class="lab-mono">{{ '{semantic_block}' }}</span>,
-            <span class="lab-mono">{{ '{sample_count}' }}</span>,
-            <span class="lab-mono">{{ '{window_ms}' }}</span> and
-            <span class="lab-mono">{{ '{source_mode}' }}</span>. The semantic block
-            contains the processed sEMG state, encoder positions and conflicts.
-          </p>
-
+            The user turn is generated from the analysis - the feature table and
+            the picture - so there is no text a researcher could edit without
+            editing what the numbers mean. What was here was a stored template
+            with placeholders for a matrix that is no longer sent.
+          -->
           <div class="flex items-center justify-between border-t border-ink-200 pt-2">
             <span class="lab-label">Assembled preview</span>
             <button mat-stroked-button class="!min-h-0 !py-0 !text-[11px]"
@@ -240,18 +216,20 @@ import { firstValueFrom } from 'rxjs';
               <button class="rounded px-2 py-0.5 font-semibold transition-colors"
                       [class]="fullPrompt() ? 'text-ink-500 hover:text-navy' : 'bg-navy text-white'"
                       (click)="fullPrompt.set(false)">
-                Dynamic block
+                Feature table
               </button>
               <button class="rounded px-2 py-0.5 font-semibold transition-colors"
                       [class]="fullPrompt() ? 'bg-navy text-white' : 'text-ink-500 hover:text-navy'"
                       (click)="fullPrompt.set(true)">
                 Full prompt
               </button>
+              <!--
+                Named by the server's own answer, not by the panel's copy of the
+                toggle: the two can disagree while a preview is in flight, and
+                the label that matters is the one describing what was rendered.
+              -->
               <span class="ml-auto text-ink-400">
-                {{ preview.dynamic_content }}
-                @if (preview.matrix_rows_sent) {
-                  - {{ preview.matrix_rows_sent }} of {{ store.sampleCount() }} rows
-                }
+                {{ preview.feature_source === 'preprocessed' ? 'envelope' : 'raw' }} + image
               </span>
               <button class="ml-2 text-ink-400 hover:text-pink"
                       matTooltip="Copy what is shown"
@@ -266,15 +244,41 @@ import { firstValueFrom } from 'rxjs';
                  [class]="fullPrompt() ? 'h-72' : 'h-40'">{{ fullPrompt() ? preview.full_prompt : preview.dynamic_prompt }}</pre>
 
             <!--
-              The token budget, as four cards.
+              The picture, shown because it *is* the stimulus.
+
+              The text above is the smaller half of what the model receives, and
+              a preview that shows only the text invites the assumption that the
+              text is all there is. It is rendered by the server from this exact
+              window, so what is on screen is the image that will be sent - not
+              a client-side redraw that could differ from it.
+            -->
+            @if (preview.image_data_url) {
+              <div class="space-y-1">
+                <div class="flex items-center gap-1.5 text-[10px] text-ink-500">
+                  <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">image</mat-icon>
+                  <span class="lab-label !mb-0">Image sent to the model</span>
+                  <!--
+                    The digest, because the image cannot be read back out of the
+                    record as text. It is what proves two runs saw the same
+                    picture.
+                  -->
+                  <span class="lab-mono ml-auto text-ink-400">
+                    {{ preview.image_sha256?.slice(0, 12) }}
+                  </span>
+                </div>
+                <img class="w-full rounded border border-ink-200 bg-white"
+                     [src]="preview.image_data_url"
+                     alt="EMG traces plotted as eight stacked panels on a shared amplitude scale" />
+              </div>
+            }
+
+            <!--
+              The token budget, one card per block plus the total.
 
               Each block gets its own colour so the eye can go straight to the
-              one that dominates without reading four numbers first. On a real
-              recording the dynamic block is an order of magnitude larger than
-              the other two, and that is the whole story of whether a prompt
-              fits.
+              one that dominates without reading six numbers first.
             -->
-            <div class="grid grid-cols-5 gap-1.5">
+            <div class="grid grid-cols-6 gap-1.5">
               @for (row of tokenRows(preview); track row.label) {
                 <div class="flex items-center gap-1.5 rounded-md px-2 py-1.5"
                      [class]="row.tone"
@@ -352,40 +356,16 @@ export class PromptBlocks {
     }
   }
 
-  protected selectTemplate(id: string): void {
-    this.store.selectedTemplateId.set(id);
-    const version = this.store.dynamicTemplates().find((p) => p.id === id);
-    if (version) this.store.dynamicTemplateDraft.set(version.content);
-  }
-
-  protected async saveTemplate(): Promise<void> {
-    const result = await this.ask({
-      title: 'Save a new dynamic template version',
-      hint: 'This controls how the semantic state is rendered. It is the only block that '
-          + 'changes between runs. Alternative renderings are a legitimate '
-          + 'experimental variable.',
-      name: 'Custom dynamic template',
-      version: this.nextVersion(this.store.dynamicTemplates().length),
-      summary: [
-        { label: 'Characters', value: String(this.store.dynamicTemplateDraft().length) },
-        { label: 'Becomes active', value: 'yes' },
-      ],
-    });
-    if (result) {
-      await this.store.saveTemplateVersion(result.name, result.version ?? '1.0.0');
-    }
-  }
-
-  /** Token accounting shown beside the preview. */
   /**
-   * The token budget as five cards, one per block plus the total.
+   * The token budget as six cards, one per block plus the total.
    *
-   * Colour carries the meaning: deepening navy for the three frozen blocks
-   * (fixed cost, paid on every run), pink for the block that varies, and the
-   * total in amber or pink depending on whether it fits. On a real recording
-   * the dynamic block is an order of magnitude larger than the other three, and
-   * seeing that at a glance is more useful than reading five numbers and
-   * comparing them.
+   * Colour carries the meaning: deepening navy for the four frozen blocks
+   * (fixed cost, paid on every run), pink for the turn that varies, and the
+   * total in amber or pink depending on whether it fits.
+   *
+   * Every figure counts text only. The picture also occupies context, at a rate
+   * that depends on the vision encoder, so the total is a floor rather than a
+   * bound — which is why the card says "of context" and not "remaining".
    */
   protected tokenRows(preview: {
     token_breakdown: Record<string, number>;
@@ -419,16 +399,26 @@ export class PromptBlocks {
         value: String(b['emg_context'] ?? 0),
         icon: 'biotech',
         tone: 'bg-navy/[0.15] text-navy',
-        hint: 'Block 3: the semantic sEMG decision policy. Frozen, '
+        hint: 'Block 2: the electrode map and how to read the descriptors. Frozen, '
           + 'and changing it changes what the model concludes from the same signal.'
           + share(b['emg_context'] ?? 0),
       },
       {
-        label: 'Dynamic',
+        label: 'Image',
+        value: String(b['image_context'] ?? 0),
+        icon: 'image',
+        tone: 'bg-navy/20 text-navy',
+        hint: 'Block 3: how to read the plot. Generated per window, because it has to '
+          + 'state the filter that actually ran. The picture itself is not counted here.'
+          + share(b['image_context'] ?? 0),
+      },
+      {
+        label: 'Features',
         value: String(b['dynamic_prompt'] ?? 0),
         icon: 'monitor_heart',
         tone: 'bg-pink/10 text-pink',
-        hint: 'Block 4: semantic sEMG and encoder state for this run. The only block that changes.'
+        hint: 'The user turn: the descriptor table for this window. Eight rows whatever '
+          + 'the recording length.'
           + share(b['dynamic_prompt'] ?? 0),
       },
       {

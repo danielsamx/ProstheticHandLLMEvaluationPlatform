@@ -16,8 +16,8 @@ import {
 } from '../models/emg.model';
 import { HandSpec, Handedness, LimitProfileId, MovementFrame } from '../models/hand.model';
 import {
-  DynamicContent,
   Execution,
+  FeatureSource,
   LlmModel,
   LmStudioProbe,
   PromptPreview,
@@ -30,11 +30,6 @@ import { ProsthesisLinkService } from './prosthesis-link.service';
 
 const CHANNEL_LABELS = Array.from({ length: EMG_CHANNEL_COUNT }, (_, i) => `CH${i + 1}`);
 const DEFAULT_ROWS = 200;
-const SEMANTIC_DYNAMIC_TEMPLATE = `MULTIMODAL SEMANTIC STATE
-{semantic_block}
-Follow control_recommendation and use only supported tool arguments.
-Ground truth is never included. Never use hold as an output label.`;
-
 function blankMatrix(rows = DEFAULT_ROWS): number[][] {
   return Array.from({ length: rows }, () => new Array<number>(EMG_CHANNEL_COUNT).fill(0));
 }
@@ -60,12 +55,6 @@ export class LabStore {
   readonly systemPrompts = signal<PromptVersion[]>([]);
   readonly technicalContexts = signal<PromptVersion[]>([]);
   readonly emgContexts = signal<PromptVersion[]>([]);
-  readonly dynamicTemplates = signal<PromptVersion[]>([]);
-  readonly visibleDynamicTemplates = computed(() =>
-    this.dynamicContent() === 'semantic'
-      ? this.dynamicTemplates().filter((item) => item.content.includes('{semantic_block}'))
-      : this.dynamicTemplates(),
-  );
   readonly lmStudio = signal<LmStudioProbe | null>(null);
 
   // ── Current selection ─────────────────────────────────────────────────────
@@ -75,7 +64,6 @@ export class LabStore {
   readonly selectedSystemPromptId = signal<string | null>(null);
   readonly selectedContextId = signal<string | null>(null);
   readonly selectedEmgContextId = signal<string | null>(null);
-  readonly selectedTemplateId = signal<string | null>(null);
   //
   // Pinned rather than exposed. Each was a control with no decision behind it,
   // and each was a way for two runs to become quietly incomparable. They stay
@@ -89,23 +77,18 @@ export class LabStore {
   // ── What the model is shown, and what it is scored against ───────────────
 
   /**
-   * Which rendering of the EMG goes into the dynamic block.
+   * The preprocessing toggle.
    *
-   * A real experimental variable rather than a display option: "can a model
-   * read raw EMG?" and "can a model act on extracted features?" are different
-   * questions, and the second is much the easier one because the signal
-   * processing has already been done for it.
-   */
-  readonly dynamicContent = signal<DynamicContent>('semantic');
-
-  /**
-   * Cap on the matrix rows sent; null means the whole window.
+   * One switch for both halves of the stimulus: it decides whether the plotted
+   * trace and the descriptor table come from the linear envelope or from the
+   * raw window. Two switches would allow the combination where the model is
+   * shown one signal and told the numbers of another.
    *
-   * Null by default. The old fixed cap of 32 meant an imported 404-row
-   * recording reached the model as an eighth of itself while the panel
-   * reported the full count.
+   * It replaces `dynamicContent`, which chose between renderings of a text
+   * prompt — matrix, features, both, semantic — that no longer exists: the
+   * model is shown a picture, and the matrix is never printed.
    */
-  readonly matrixMaxRows = signal<number | null>(null);
+  readonly featureSource = signal<FeatureSource>('preprocessed');
 
   /**
    * The command a domain expert says this window should produce.
@@ -146,7 +129,6 @@ export class LabStore {
   readonly systemPromptDraft = signal<string>('');
   readonly technicalContextDraft = signal<string>('');
   readonly emgContextDraft = signal<string>('');
-  readonly dynamicTemplateDraft = signal<string>('');
   readonly promptPreview = signal<PromptPreview | null>(null);
   readonly previewLoading = signal(false);
 
@@ -355,13 +337,16 @@ export class LabStore {
       firstValueFrom(this.api.listSystemPrompts()),
       firstValueFrom(this.api.listTechnicalContexts()),
       firstValueFrom(this.api.listEmgContexts()),
-      firstValueFrom(this.api.listDynamicTemplates()),
     ]);
 
+    // The dynamic templates are no longer fetched. The catalogue endpoint still
+    // exists — the rows are what the executions recorded before this flow point
+    // at — but nothing in the lab can select one, so loading them would only
+    // put an artefact on screen that cannot affect a run.
     const labels = [
       'hand specification', 'EMG format', 'providers', 'models',
       'configurations', 'system prompts', 'technical contexts',
-      'EMG contexts', 'dynamic templates',
+      'EMG contexts',
     ];
 
     const failed: string[] = [];
@@ -380,7 +365,6 @@ export class LabStore {
     const systems = value<PromptVersion[]>(5, []);
     const contexts = value<PromptVersion[]>(6, []);
     const emgContexts = value<PromptVersion[]>(7, []);
-    const templates = value<PromptVersion[]>(8, []);
 
     if (spec) this.handSpec.set(spec);
     if (format) this.matrixFormat.set(format);
@@ -390,7 +374,6 @@ export class LabStore {
     this.systemPrompts.set(systems);
     this.technicalContexts.set(contexts);
     this.emgContexts.set(emgContexts);
-    this.dynamicTemplates.set(templates);
 
     // Prefer the local LM Studio provider: it is the primary runtime here.
     const local = providers.find((p) => p.slug === 'lm_studio') ?? providers[0];
@@ -412,18 +395,6 @@ export class LabStore {
       this.selectedEmgContextId.set(activeEmg.id);
       this.emgContextDraft.set(activeEmg.content);
     }
-    const activeTemplate = templates.find((p) => p.is_active) ?? templates[0];
-    if (activeTemplate) {
-      if (this.dynamicContent() === 'semantic') {
-        const semanticTemplate = templates.find((item) => item.content.includes('{semantic_block}'));
-        this.selectedTemplateId.set(semanticTemplate?.id ?? null);
-        this.dynamicTemplateDraft.set(semanticTemplate?.content ?? SEMANTIC_DYNAMIC_TEMPLATE);
-      } else {
-        this.selectedTemplateId.set(activeTemplate.id);
-        this.dynamicTemplateDraft.set(activeTemplate.content);
-      }
-    }
-
     const firstConfig = configs[0];
     if (firstConfig?.id) this.applyConfiguration(firstConfig);
     this.ensureSelectableConfiguration();
@@ -739,27 +710,16 @@ export class LabStore {
 
   // ── Prompt preview ────────────────────────────────────────────────────────
   /**
-   * Change what the dynamic block carries, and show the result immediately.
+   * Flip the preprocessing toggle, and show the result immediately.
    *
-   * The mode is a discrete choice with no intermediate states, so there is
-   * nothing to stage and nothing to confirm — deferring it behind a button
-   * would only create a window in which the panel and the prompt disagree.
+   * A discrete choice with no intermediate states, so there is nothing to stage
+   * and nothing to confirm — deferring it behind a button would only create a
+   * window in which the panel and the prompt disagree. It re-renders the
+   * picture as well as the table, because it governs both.
    */
-  async setDynamicContent(mode: DynamicContent): Promise<void> {
-    if (this.dynamicContent() === mode) return;
-    this.dynamicContent.set(mode);
-    await this.refreshPreview();
-  }
-
-  /**
-   * Commit the matrix row cap and re-render.
-   *
-   * Separate from the mode because a number field has intermediate states: it
-   * fires on every keystroke, so "128" passes through 1 and 12 on the way. The
-   * component holds a draft and calls this on blur, Enter or Apply.
-   */
-  async setMatrixMaxRows(rows: number | null): Promise<void> {
-    this.matrixMaxRows.set(rows);
+  async setFeatureSource(source: FeatureSource): Promise<void> {
+    if (this.featureSource() === source) return;
+    this.featureSource.set(source);
     await this.refreshPreview();
   }
 
@@ -768,19 +728,15 @@ export class LabStore {
     try {
       const preview = await firstValueFrom(this.api.previewPrompt({
         window: toWindowPayload(this.currentWindow()),
-        mechanical_telemetry: this.currentMechanicalTelemetry(),
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
         emg_context_version_id: this.selectedEmgContextId(),
-        dynamic_prompt_template_id: this.selectedTemplateId(),
         model_id: this.selectedModelId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
         emg_context_override: this.dirtyEmgContext() ? this.emgContextDraft() : null,
-        dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
-        dynamic_content: this.dynamicContent(),
-        matrix_max_rows: this.matrixMaxRows(),
+        feature_source: this.featureSource(),
         expected_serial_command: this.expectedCommand().trim() || null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,
@@ -808,22 +764,9 @@ export class LabStore {
     return !!active && active.content !== this.emgContextDraft();
   }
 
-  dirtyTemplate(): boolean {
-    const active = this.dynamicTemplates().find((p) => p.id === this.selectedTemplateId());
-    return this.dynamicContent() === 'semantic'
-      ? !active || active.content !== this.dynamicTemplateDraft()
-      : !!active && active.content !== this.dynamicTemplateDraft();
-  }
-
-  async saveTemplateVersion(name: string, version: string): Promise<void> {
-    const saved = await firstValueFrom(this.api.createDynamicTemplate({
-      name, version, content: this.dynamicTemplateDraft(), activate: true,
-    }));
-    this.dynamicTemplates.update(
-      (list) => [saved, ...list.map((p) => ({ ...p, is_active: false }))],
-    );
-    this.selectedTemplateId.set(saved.id);
-  }
+  // There is no `dirtyTemplate` and no `saveTemplateVersion`. The user turn is
+  // generated from the analysis — the feature table and the picture — so there
+  // is no text a researcher could edit without editing what the numbers mean.
 
   /** Save an edited block as a NEW version - existing rows are immutable. */
   async saveSystemPromptVersion(name: string, version: string): Promise<void> {
@@ -877,18 +820,14 @@ export class LabStore {
         sampling_configuration_id: this.selectedConfigurationId()!,
         invocation_mode: this.invocationMode(),
         window: toWindowPayload(this.currentWindow()),
-        mechanical_telemetry: this.currentMechanicalTelemetry(),
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
         emg_context_version_id: this.selectedEmgContextId(),
-        dynamic_prompt_template_id: this.selectedTemplateId(),
         system_prompt_override: this.dirtySystemPrompt() ? this.systemPromptDraft() : null,
         technical_context_override: this.dirtyContext() ? this.technicalContextDraft() : null,
         emg_context_override: this.dirtyEmgContext() ? this.emgContextDraft() : null,
-        dynamic_template_override: this.dirtyTemplate() ? this.dynamicTemplateDraft() : null,
-        dynamic_content: this.dynamicContent(),
-        matrix_max_rows: this.matrixMaxRows(),
+        feature_source: this.featureSource(),
         expected_serial_command: this.expectedCommand().trim() || null,
         limit_profile: this.limitProfile(),
         subject_ref: this.subjectRef() || null,

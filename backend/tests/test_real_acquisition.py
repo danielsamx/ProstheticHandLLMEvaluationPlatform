@@ -54,51 +54,58 @@ def test_the_recording_is_flexor_dominant(raw_matrix):
 
 
 def test_the_window_renders_into_a_prompt(raw_matrix):
+    """The recording becomes a picture and eight rows of descriptors.
+
+    It used to become 404 printed rows of samples. The assertion changed with
+    the flow, and the interesting property changed with it: the size of the user
+    turn no longer depends on the length of the recording at all.
+    """
     window = EmgWindow(samples=raw_matrix, sample_rate_hz=1000,
                        ground_truth_gesture="hand_open")
     prompt = build_prompt(window, handedness=Handedness.RIGHT)
 
     block = prompt.dynamic_prompt
-    lines = block.splitlines()
+    assert block.startswith("DERIVED FEATURES")
+    # Eight channels, one row each — whatever the recording's length.
+    assert sum(line.startswith("CH") for line in block.splitlines()) == EMG_CHANNEL_COUNT
 
-    # The matrix and nothing else: no acquisition metadata, no feature table.
-    assert all(ln.startswith("[") and ln.endswith("]") for ln in lines)
-    assert all(ln.count(",") == 7 for ln in lines)
+    # No sample survives into the text: the matrix is not printed anywhere.
+    assert "[-2.000" not in prompt.full_prompt
 
-    # Every row of the imported recording, not an excerpt of it.
-    assert len(lines) == window.sample_count == 404
+    # The picture is the stimulus, and it travels in the user turn.
+    assert prompt.image_data_url is not None
+    assert prompt.image_sha256
+    user_turn = prompt.messages[-1]["content"]
+    assert any(part.get("type") == "image_url" for part in user_turn)
 
 
-def test_a_real_recording_needs_a_larger_context_and_the_budget_says_which(raw_matrix):
-    """404 rows of real acquisition do not fit an 8k context.
+def test_a_real_recording_now_fits_a_small_context(raw_matrix):
+    """404 rows of real acquisition used not to fit an 8k context.
 
-    Previously they did, because only 32 of them were sent. Fitting was a
-    property of the excerpt, not of the recording, and reporting the full row
-    count beside a truncated prompt is the kind of quiet mismatch that survives
-    into a published number.
+    They do now, because they are not sent: the model is shown a picture and
+    eight rows of descriptors. This is the flow's most concrete consequence, and
+    it is worth pinning — if a change ever puts samples back into the text, the
+    budget will notice before a researcher does.
+
+    The estimate covers text only. The picture also occupies context, at a rate
+    that depends on the vision encoder, so "fits" here means the text fits.
     """
     from app.prompts.budget import check
 
     window = EmgWindow(samples=raw_matrix, sample_rate_hz=1000)
     prompt = build_prompt(window)
 
-    small = check(
+    report = check(
         system_prompt=prompt.system_prompt,
         technical_context=prompt.technical_context,
         dynamic_prompt=prompt.dynamic_prompt,
         emg_context=prompt.emg_context,
+        image_context=prompt.image_context,
         context_window=8192,
-        matrix_rows=window.sample_count,
     )
-    assert not small.fits
-    assert any("context length" in line for line in small.advice)
+    assert report.fits, report.summary()
 
-    # The size the advice points at does hold it.
-    large = check(
-        system_prompt=prompt.system_prompt,
-        technical_context=prompt.technical_context,
-        dynamic_prompt=prompt.dynamic_prompt,
-        emg_context=prompt.emg_context,
-        context_window=32768,
-    )
-    assert large.fits, large.summary()
+    # And the size no longer tracks the recording: a window ten times shorter
+    # produces a user turn of the same shape.
+    short = build_prompt(EmgWindow(samples=raw_matrix[:40], sample_rate_hz=1000))
+    assert len(short.dynamic_prompt.splitlines()) == len(prompt.dynamic_prompt.splitlines())

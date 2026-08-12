@@ -19,6 +19,10 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "numpy>=2.1",
     "scipy>=1.14",
+    # Renders the EMG envelope as the image the vision flow sends. Used through
+    # the Agg backend only: the container has no display, and the default
+    # interactive backend would fail at import rather than at use.
+    "matplotlib>=3.9",
     "email-validator>=2.2",
     "websockets>=14.0",
 ]

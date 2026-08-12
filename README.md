@@ -592,7 +592,7 @@ produced it. Deduplicated at write time on
 - Change one word in one block and the next run files a **second** row.
 - Change it back and the **first** row is reused, with its `last_used_at` touched.
 
-A configuration carries the label you see in the interface (`S1.0 · T1.1 · E1.1`),
+A configuration carries the label you see in the interface (`S1.0 · T1.0 · E1.0`),
 the three block versions, and the full frozen text as it stood — so a result stays
 readable after the blocks have moved on.
 

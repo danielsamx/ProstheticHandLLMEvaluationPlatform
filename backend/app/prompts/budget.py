@@ -5,10 +5,17 @@ a message the researcher cannot act on without reading the server log. Checking
 before the request costs nothing and turns it into an explicit, fixable warning.
 
 Estimation is deliberately conservative. Character-count heuristics are badly
-wrong for this content: an EMG matrix is almost entirely numbers, and a signed
-three-decimal value like ``-0.004`` costs three to four tokens across roughly
-six characters — where prose costs one token per four. Dividing by four
+wrong for this content: the feature table is almost entirely numbers, and a
+signed three-decimal value like ``-0.004`` costs three to four tokens across
+roughly six characters — where prose costs one token per four. Dividing by four
 under-counted a real prompt by more than half.
+
+The calibration below was derived when the prompt carried a full sample matrix,
+so it is measured over far more numeric content than any prompt now contains.
+It is kept because it is still the honest direction to err in — over-counting
+warns early, under-counting fails at the provider — but it is no longer tuned to
+this prompt's mix and should be re-derived if the budget check ever starts
+firing on prompts that fit.
 """
 
 from __future__ import annotations
@@ -89,20 +96,28 @@ def check(
     technical_context: str,
     dynamic_prompt: str,
     emg_context: str = "",
+    image_context: str = "",
     context_window: int | None,
     completion_reserve: int = DEFAULT_COMPLETION_RESERVE,
-    matrix_rows: int | None = None,
 ) -> BudgetReport:
     """Estimate the prompt and compare it against the runtime's context window.
 
     ``context_window`` is what the model was *loaded* with, which is often far
     smaller than the architecture supports — LM Studio defaults well below the
     maximum, and that is the number that decides whether the request succeeds.
+
+    **This counts text only.** The picture also occupies context, at a rate that
+    depends on the vision encoder and the resolution the runtime rescales to,
+    and no formula here would be right for more than one model. So the estimate
+    is a floor, not a bound: a prompt reported as fitting with little room to
+    spare may still be rejected. It is reported as a floor rather than padded
+    with a guess, because a padded figure looks like a measurement.
     """
     breakdown = {
         "system_prompt": estimate_tokens(system_prompt),
         "technical_context": estimate_tokens(technical_context),
         "emg_context": estimate_tokens(emg_context),
+        "image_context": estimate_tokens(image_context),
         "dynamic_prompt": estimate_tokens(dynamic_prompt),
     }
     total = sum(breakdown.values())
@@ -125,26 +140,16 @@ def check(
             f"(needs at least {total + completion_reserve})."
         )
 
-        # The matrix is sent whole by default, so on any real recording it is
-        # the dominant block and the only one worth talking about. The advice
-        # names a row count rather than a token count: rows are what the
-        # researcher can actually set.
-        largest = max(breakdown, key=breakdown.get)
-        if largest == "dynamic_prompt":
-            from app.prompts.dynamic_prompt import rows_that_fit
-
-            fixed = (breakdown["system_prompt"] + breakdown["technical_context"]
-                     + breakdown["emg_context"])
-            affordable = rows_that_fit(available - fixed)
-            detail = f" ({matrix_rows} rows sent)" if matrix_rows else ""
-            advice.append(
-                f"The EMG matrix is the largest block{detail}. This context "
-                f"holds roughly {affordable} rows alongside the frozen blocks. "
-                "Either cap the rows sent, raise the model's context length, or "
-                "switch the dynamic block to features only — the descriptors are "
-                "computed from the complete window either way, so nothing is "
-                "lost by not printing every sample."
-            )
+        # Every block is now frozen text of a known, small size: the feature
+        # table is eight rows whatever the recording's length, so nothing here
+        # grows with the data and there is no row count to cut. If the text does
+        # not fit, the context is simply too small — which is worth saying,
+        # because the previous advice ("cap the rows sent") no longer refers to
+        # anything the researcher can set.
+        advice.append(
+            "Every block is fixed-size text, so no setting in the lab will "
+            "shrink it. The context length is the only lever."
+        )
 
         if completion_reserve > 1_024:
             advice.append(

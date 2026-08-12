@@ -129,8 +129,14 @@ def test_the_expected_command_never_reaches_the_prompt():
     window = synthesise_window("power_grasp", seed=1, samples=16)
     prompt = build_prompt(window)
 
-    # The builder has no parameter for it, and nothing in the assembled prompt
+    # The builder has no parameter for it, so nothing in the assembled prompt
     # can carry it. This asserts the design rather than a value.
-    assert "expected" not in prompt.full_prompt.lower()
+    #
+    # It used to assert the word "expected" was absent from the prompt, which
+    # was a proxy for the wrong thing: the system prompt legitimately says that
+    # no_action is "a valid and expected answer", and a test that forbids the
+    # English word forbids the block from explaining itself. What must not
+    # appear is the answer key, and the only route for it is the signature.
     import inspect
     assert "expected_serial_command" not in inspect.signature(build_prompt).parameters
+    assert "expected_serial_command" not in prompt.metadata

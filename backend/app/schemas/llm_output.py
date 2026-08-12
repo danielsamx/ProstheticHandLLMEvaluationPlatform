@@ -178,23 +178,70 @@ def derive_pattern(gesture: ControlCommand | None) -> str:
 
 
 def output_contract() -> str:
-    """The response shape as stated to the model, in the technical context."""
-    gestures = "|".join(f'"{letter}"' for letter in _GESTURE_LETTERS)
-    first, last = _ACTUATOR_LETTERS[0], _ACTUATOR_LETTERS[-1]
+    """The response shape as it is offered to the model.
+
+    Rendered from :class:`OpenCloseCommand`, not from the full one, so this
+    endpoint cannot describe a shape the runtime no longer permits — the exact
+    disagreement that let a model answer with actuator positions and then be
+    marked wrong for it.
+    """
+    gestures = "|".join(f'"{letter}"' for letter in _OPEN_CLOSE_LETTERS)
     return (
         "OUTPUT\n"
         "Valid JSON only. No prose.\n"
         "{\n"
-        '  "hand":"right"|"left",\n'
-        '  "intent":"gesture"|"joint_positions"|"stop"|"no_action",\n'
+        '  "intent":"gesture"|"no_action",\n'
         f'  "gesture":{gestures}|null,\n'
-        f'  "commands":[{{"actuator":"{first}".."{last}","position":int,'
-        f'"speed_pct":{SAFETY.min_speed_pct}-{SAFETY.max_speed_pct}}}],\n'
         '  "serial_command":string,\n'
         '  "confidence":float,\n'
-        '  "safety":{"within_limits":bool}\n'
+        '  "detected_pattern":string|null\n'
         "}"
     )
+
+
+#: The two letters this flow permits, read from the domain rather than typed.
+_OPEN_CLOSE_LETTERS: tuple[str, ...] = tuple(
+    command.value
+    for command, gesture in GESTURES.items()
+    if gesture.name in ("OPEN", "CLOSE")
+)
+
+
+class OpenCloseCommand(BaseModel):
+    """The response shape *offered* to the model. Deliberately narrower.
+
+    The schema is not documentation: it is sent as ``response_format`` or as a
+    tool signature, so the runtime constrains decoding with it. That makes it
+    the strongest statement of what the model may answer — stronger than any
+    prose — and it was contradicting the prose.
+
+    The technical block says the only permitted answers are O, C and no_action,
+    while the schema offered fourteen gesture letters, six actuators and an
+    integer position per actuator. A model reading both was handed two
+    contracts and allowed to pick, and the wider one was the enforced one. A
+    reply of ``A320,B240`` was then rejected by the validator — recorded as the
+    model's error, when the platform had put the vocabulary in front of it.
+
+    What is *parsed* stays wide: :class:`ProstheticCommand` still accepts the
+    full shape, because executions recorded under the fourteen-gesture contract
+    have to keep parsing and re-judging. Narrowing what is asked for does not
+    narrow what can be read back.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["gesture", "no_action"]
+    gesture: Literal[_OPEN_CLOSE_LETTERS] | None = None  # type: ignore[valid-type]
+
+    #: `O`, `C`, or empty for no_action. Empty is a real answer here — see the
+    #: note on `ProstheticCommand.serial_command`: there is no "hold" command,
+    #: so the honest representation of inaction is the absence of one.
+    serial_command: str = ""
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+
+    #: Kept so a run can be grouped by what the model believed it saw, which is
+    #: not derivable from a two-letter answer.
+    detected_pattern: str | None = None
 
 
 def response_json_schema() -> dict[str, Any]:
@@ -203,5 +250,15 @@ def response_json_schema() -> dict[str, Any]:
     Structured output removes the largest single failure mode — prose wrapped
     around the JSON — before it can happen, rather than catching it afterwards
     in the parse stage.
+    """
+    return OpenCloseCommand.model_json_schema()
+
+
+def full_response_json_schema() -> dict[str, Any]:
+    """The fourteen-gesture shape. No longer sent; kept for the stored records.
+
+    Pinned as its own function rather than deleted so that reading back an
+    execution run under the old contract does not depend on a schema that only
+    exists in git history.
     """
     return ProstheticCommand.model_json_schema()

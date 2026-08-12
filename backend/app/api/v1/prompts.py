@@ -21,7 +21,6 @@ from app.models.prompts import (
 )
 from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
-from app.prompts.dynamic_prompt import overriding_template
 from app.prompts.emg_context import build_emg_context
 from app.prompts.technical_context import build_technical_context
 from app.schemas.api import (
@@ -277,9 +276,6 @@ async def preview_prompt(
         session, TechnicalContextVersion, payload.technical_context_version_id
     )
     emg_row = await _resolve(session, EmgContextVersion, payload.emg_context_version_id)
-    template_row = await _resolve(
-        session, DynamicPromptTemplate, payload.dynamic_prompt_template_id
-    )
 
     profile = get_limit_profile(
         payload.limit_profile.value if payload.limit_profile
@@ -295,21 +291,11 @@ async def preview_prompt(
         or (context_row.content if context_row else None),
         emg_context=payload.emg_context_override
         or (emg_row.content if emg_row else None),
-        dynamic_template=payload.dynamic_template_override
-        or overriding_template(template_row),
-        # These were accepted by the schema and then dropped on the floor: the
-        # preview always rendered the full matrix whatever the researcher had
-        # selected. A preview that does not match what will be sent is worse
-        # than no preview, because it is trusted.
-        dynamic_content=payload.dynamic_content,
-        matrix_max_rows=payload.matrix_max_rows,
+        # Passed through rather than defaulted, because a preview that does not
+        # match what will be sent is worse than no preview: it is trusted.
+        feature_source=payload.feature_source,
         limit_profile=profile,
         experiment_type=payload.experiment_type,
-        subject_ref=payload.subject_ref,
-        subject_notes=payload.subject_notes,
-        extra_parameters=payload.extra_parameters,
-        mechanical_telemetry=payload.mechanical_telemetry,
-        mvc_by_channel=payload.mvc_by_channel,
         merge_context_into_system=payload.merge_context_into_system,
     )
 
@@ -324,12 +310,9 @@ async def preview_prompt(
         system_prompt=assembled.system_prompt,
         technical_context=assembled.technical_context,
         emg_context=assembled.emg_context,
+        image_context=assembled.image_context,
         dynamic_prompt=assembled.dynamic_prompt,
         context_window=context_window,
-        # What was actually rendered, not a guess. The hard-coded 64 here was a
-        # leftover from the era of a fixed row cap, and it made the budget
-        # advice quote a row count that had nothing to do with the request.
-        matrix_rows=assembled.metadata.get("matrix_rows_sent"),
     )
 
     return PromptPreviewOut(
@@ -338,6 +321,10 @@ async def preview_prompt(
         emg_context=assembled.emg_context,
         dynamic_prompt=assembled.dynamic_prompt,
         full_prompt=assembled.full_prompt,
+        image_context=assembled.image_context,
+        image_data_url=assembled.image_data_url,
+        image_sha256=assembled.image_sha256,
+        image_context_sha256=assembled.image_context_sha256,
         messages=assembled.messages,
         limit_profile=assembled.limit_profile,
         char_counts=assembled.char_counts(),
@@ -352,8 +339,7 @@ async def preview_prompt(
         context_window=budget.context_window,
         fits_context=budget.fits,
         budget_advice=budget.advice,
-        matrix_rows_sent=assembled.metadata.get("matrix_rows_sent") or 0,
-        dynamic_content=assembled.metadata.get("dynamic_content", "matrix"),
+        feature_source=assembled.metadata["feature_source"],
     )
 
 

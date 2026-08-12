@@ -132,7 +132,7 @@ Una fila por cada **combinación distinta** de los tres bloques congelados, úni
 
 Se deduplica al escribir: trescientas ejecuciones bajo un montaje dejan una fila,
 cambiar un bloque archiva una segunda, y volver a la primera la reutiliza y
-actualiza `last_used_at`. Lleva `label` (`S1.0 · T1.1 · E1.1`), las tres claves
+actualiza `last_used_at`. Lleva `label` (`S1.0 · T1.0 · E1.0`), las tres claves
 ajenas de versión **y** las cadenas de versión copiadas, más `frozen_context_text`.
 
 Las cadenas se copian en vez de solo referenciarse a propósito. Las claves ajenas
@@ -374,6 +374,8 @@ ORDER BY created_at DESC;
 | `0006_emg_context_block` | `emg_context_versions` y el cuarto bloque en las ejecuciones |
 | `0007_prompt_configurations` | `prompt_configurations`, deduplicada sobre el digest congelado |
 | `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
+| `0009_auth_myo_feedback` | Roles de autenticación, ajustes de adquisición Myo y feedback de gestos |
+| `0010_feedback_timestamp_defaults` | Valores por defecto en servidor para las marcas de tiempo de feedback |
 | `0009_auth_myo_feedback` | Cuentas con cuatro roles, autenticación y retroalimentación auditable de gestos |
 
 `0002` elimina las ventanas y ejecuciones existentes. Un vector de

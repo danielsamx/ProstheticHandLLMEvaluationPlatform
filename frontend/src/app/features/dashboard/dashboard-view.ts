@@ -366,9 +366,11 @@ import { LabStore } from '@core/services/lab.store';
                     <td class="px-3 py-1.5">
                       <span class="lab-chip bg-ink-100 text-ink-600"
                             [matTooltip]="inputTooltip(execution)">
-                        {{ execution.dynamic_content ?? 'matrix' }}
                         @if (execution.matrix_rows_sent) {
+                          {{ execution.dynamic_content ?? 'matrix' }}
                           <span class="lab-mono">· {{ execution.matrix_rows_sent }}r</span>
+                        } @else {
+                          envelope image
                         }
                       </span>
                     </td>
@@ -534,16 +536,25 @@ export class DashboardView implements OnInit {
     return 'text-ink-600';
   }
 
+  /**
+   * What the model was shown, for rows recorded under either flow.
+   *
+   * The history is mixed and has to stay readable: executions from the text
+   * flow are still in the table, and relabelling them as image runs would be a
+   * lie in the one column whose job is to say what the model saw. New runs
+   * write 'features' with no row count, so they fall through to the last case.
+   */
   protected inputTooltip(execution: Execution): string {
     const rows = execution.matrix_rows_sent;
-    switch (execution.dynamic_content) {
-      case 'features':
-        return 'The model saw only the derived descriptors — the signal processing was done for it.';
-      case 'both':
-        return `The model saw the raw matrix (${rows ?? '?'} rows) and the derived descriptors.`;
-      default:
-        return `The model saw ${rows ?? '?'} rows of raw EMG and nothing else.`;
+    if (rows) {
+      return execution.dynamic_content === 'both'
+        ? `Text flow: the raw matrix (${rows} rows) and the derived descriptors.`
+        : `Text flow: ${rows} rows of raw EMG as text.`;
     }
+    if (execution.dynamic_content === 'semantic') {
+      return 'Text flow: a serialised semantic state, not the signal.';
+    }
+    return 'The model saw a plot of the EMG window and the descriptors taken from it.';
   }
 
   protected outcome(execution: Execution): { label: string; tone: string } {

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
 import { AuthService } from '@core/services/auth.service';
 import { LanguageService, TranslatePipe } from '@core/services/language.service';
@@ -43,6 +43,7 @@ import { LanguageService, TranslatePipe } from '@core/services/language.service'
 })
 export class LoginView {
   private readonly auth = inject(AuthService); private readonly router = inject(Router); private readonly language = inject(LanguageService);
+  private readonly route = inject(ActivatedRoute);
   protected email = ''; protected password = ''; protected fullName = ''; protected institution = '';
   protected readonly registerMode = signal(false); protected readonly busy = signal(false); protected readonly error = signal('');
   protected async submit(): Promise<void> {
@@ -50,7 +51,12 @@ export class LoginView {
     try {
       if (this.registerMode()) await this.auth.register(this.email, this.password, this.fullName, this.institution);
       else await this.auth.login(this.email, this.password);
-      await this.router.navigateByUrl('/lab');
+
+      // Back to where they were headed. The guard puts the attempted URL in
+      // `redirect`, so someone who followed a link to the movement log and was
+      // asked to sign in arrives at the movement log, not at the laboratory.
+      const redirect = this.route.snapshot.queryParamMap.get('redirect');
+      await this.router.navigateByUrl(redirect ?? '/lab');
     } catch (e: any) { this.error.set(e?.error?.detail ?? this.language.text('Unable to sign in.')); }
     finally { this.busy.set(false); }
   }

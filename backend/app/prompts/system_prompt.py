@@ -1,12 +1,26 @@
 """Block 1 of 4 - the System Prompt.
 
-Written during development from the technical manuals.  It defines *behaviour*:
-role, output discipline, refusal rules.  It contains no numeric limits - those
-live in the technical context so the two blocks can be versioned independently.
+Behaviour only: what the model is, what it receives, what it must return. No
+numbers, no anatomy, no interpretation rules — those belong to blocks 2, 3 and 4
+and are versioned separately, so a change to any of them does not reversion this
+one.
 
-This constant is the factory default.  The active text is stored in
-``system_prompt_versions`` and is editable from the UI; changing it creates a
-new version so every execution stays traceable to the exact wording used.
+Rewritten for the envelope-image flow. The previous text told the model it would
+receive "exactly one surface EMG analysis window" and to weigh raw samples; it
+now receives a *picture* of a processed envelope plus a small table, and never
+sees a sample. A system prompt describing a stimulus that no longer arrives is
+not merely stale — it primes the model to look for something absent and to
+explain its absence.
+
+Three things are stated here and nowhere else, because they are properties of
+the *task* rather than of the hand or the signal:
+
+* **One object, no prose.** The response is parsed by machine.
+* **Three permitted answers.** The vocabulary lives in block 4 too, but a model
+  that never reads that far must still not invent a command.
+* **Inaction is a real answer.** Without saying so, "no_action" reads as a
+  failure state and models avoid it, which turns an ambiguous window into a
+  guess — and a guess moves a motor.
 """
 
 from __future__ import annotations
@@ -14,33 +28,23 @@ from __future__ import annotations
 from typing import Final
 
 #: Every block starts at 1.0.
-#:
-#: The numbers used to carry the platform's own development history — a system
-#: prompt at 6.0.0 before anyone had run an experiment, because it had been
-#: rewritten six times while the code was being built. That history is in git,
-#: where it belongs; here it only made the artefact table read as though five
-#: earlier studies had happened.
-#:
-#: From here the version means what a researcher expects it to mean: 1.0 is the
-#: text this platform ships with, and anything above it is a change someone
-#: made deliberately and can be asked about.
-SYSTEM_PROMPT_VERSION: Final[str] = "2.0"
-SYSTEM_PROMPT_NAME: Final[str] = "HANDi EPN V3 - multimodal semantic agent"
+SYSTEM_PROMPT_VERSION: Final[str] = "1.0"
+SYSTEM_PROMPT_NAME: Final[str] = "HANDi EPN V3 - envelope image control layer"
 
 SYSTEM_PROMPT: Final[str] = """\
-You are the deterministic decision agent for the HANDi EPN V3 prosthetic hand.
-Decide from the supplied semantic sEMG state and current physical or simulated encoder state.
-Use execute_handi_command exactly once when that tool is available; otherwise return exactly its JSON arguments.
-Never output prose, markdown, comments, code fences, or unsupported labels.
-Ground truth and reviewer feedback are never sensor evidence.
-Obey action_allowed, control_recommendation, mechanical limits, staleness, stalls, and conflicts.
-For no_action use intent=no_action, gesture=null, commands=[], and serial_command="".
-Use intent=stop with serial_command="S" only to halt motion already in progress.
-Never use hold as an intent, gesture, pattern, or command.
-For identical inputs, always produce identical decisions.
+You are the embedded control layer of the HANDi EPN V3 robotic prosthetic hand.
+You receive one image of a processed surface EMG window and a table of descriptors derived from the same window.
+Decide whether the user intends to open the hand, close the hand, or make no movement.
+Output exactly one valid JSON object.
+Do not output explanations, markdown, comments, code fences or additional text.
+The only permitted values of serial_command are O, C, or the empty string.
+Use the empty string only together with intent no_action.
+no_action is a valid and expected answer whenever the evidence does not clearly favour opening or closing.
+Prefer no_action over a guess: an incorrect command moves a motor.
+Base the decision on the image and the descriptors together, never on one alone.
+For identical inputs, always produce identical outputs.
 """
 
 
 def default_system_prompt() -> str:
-    """The factory text, for the seed and for the prompt builder's fallback."""
     return SYSTEM_PROMPT

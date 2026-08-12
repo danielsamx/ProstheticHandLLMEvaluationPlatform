@@ -46,13 +46,12 @@ from app.models.validation import ExecutionError, ValidationIssueRecord, Validat
 from app.prompts import budget as prompt_budget
 from app.prompts.builder import build_prompt
 from app.schemas.emg import EmgWindow
-from app.schemas.multimodal import MechanicalTelemetry
 from app.services import audit_service, emg_service
 from app.services.llm_service import LlmCallError, LlmCallResult, call_llm
 from app.services import prompt_configuration_service
 from app.services.metrics_service import compute_metrics
 from app.domain.protocol import normalise_expected_command
-from app.prompts.dynamic_prompt import DynamicContent, overriding_template
+from app.services.analysis_service import DEFAULT_FEATURE_SOURCE, FeatureSource
 from app.schemas.llm_output import response_json_schema
 from app.validation.pipeline import validate_response
 from app.validation.results import ValidationReport
@@ -74,13 +73,11 @@ async def run_execution(
     system_prompt_version_id: uuid.UUID | None = None,
     technical_context_version_id: uuid.UUID | None = None,
     emg_context_version_id: uuid.UUID | None = None,
-    dynamic_prompt_template_id: uuid.UUID | None = None,
     system_prompt_override: str | None = None,
     technical_context_override: str | None = None,
     emg_context_override: str | None = None,
-    dynamic_template_override: str | None = None,
-    dynamic_content: DynamicContent | str = DynamicContent.MATRIX,
-    matrix_max_rows: int | None = None,
+    feature_source: FeatureSource | str = DEFAULT_FEATURE_SOURCE,
+    feedback_note: str | None = None,
     expected_serial_command: str | None = None,
     limit_profile_id: str | None = None,
     experiment_id: uuid.UUID | None = None,
@@ -89,8 +86,6 @@ async def run_execution(
     subject_ref: str | None = None,
     subject_notes: str | None = None,
     extra_parameters: dict[str, Any] | None = None,
-    mechanical_telemetry: MechanicalTelemetry | None = None,
-    mvc_by_channel: list[float] | None = None,
     merge_context_into_system: bool = True,
     repetition_index: int = 0,
     repetition_group: str | None = None,
@@ -145,9 +140,6 @@ async def run_execution(
     emg_version = await _resolve_prompt(
         session, EmgContextVersion, emg_context_version_id
     )
-    template_version = await _resolve_prompt(
-        session, DynamicPromptTemplate, dynamic_prompt_template_id
-    )
 
     profile = get_limit_profile(
         limit_profile_id
@@ -171,17 +163,10 @@ async def run_execution(
         or (context_version.content if context_version else None),
         emg_context=emg_context_override
         or (emg_version.content if emg_version else None),
-        dynamic_template=dynamic_template_override
-        or overriding_template(template_version),
-        dynamic_content=dynamic_content,
-        matrix_max_rows=matrix_max_rows,
         limit_profile=profile,
         experiment_type=experiment_type,
-        subject_ref=subject_ref,
-        subject_notes=subject_notes,
-        extra_parameters=extra_parameters,
-        mechanical_telemetry=mechanical_telemetry,
-        mvc_by_channel=mvc_by_channel,
+        feature_source=feature_source,
+        feedback_note=feedback_note,
         merge_context_into_system=merge_context_into_system,
     )
 
@@ -214,7 +199,9 @@ async def run_execution(
         technical_context_version_id=context_version.id if context_version else None,
         emg_context_version_id=emg_version.id if emg_version else None,
         prompt_configuration_id=configuration.id,
-        dynamic_prompt_template_id=template_version.id if template_version else None,
+        # No template row. The user turn is generated from the analysis, so
+        # there is no artefact to point at; the column stays for the executions
+        # recorded before that was true.
         emg_window=emg_record,
         model_snapshot=_model_snapshot(model, provider, config),
         litellm_model=f"{provider.litellm_prefix}/{model.model_key}",
@@ -237,6 +224,18 @@ async def run_execution(
         custom_parameters={
             **dict(config.extra_params or {}),
             **dict(extra_parameters or {}),
+            # Interim home for the analysis provenance: which signal was drawn
+            # and measured, the filter that actually ran, and the digest of the
+            # picture. Without the digest a stored execution cannot prove what
+            # the model was shown, because the stimulus is no longer text that
+            # can be read back out of the record. Migration 0011 promotes these
+            # to columns; until then they live here rather than nowhere.
+            **{
+                key: value
+                for key, value in assembled.metadata.items()
+                if key in ("feature_source", "preprocessing", "image_sha256",
+                           "image_width_px", "image_height_px", "image_size_kb")
+            },
         },
         app_version=settings.app_version,
         **origin.as_origin(),
@@ -247,8 +246,12 @@ async def run_execution(
         # whitespace or case the researcher happened to type. What is stored is
         # what will be compared, so the record cannot disagree with the verdict.
         expected_serial_command=normalise_expected_command(expected_serial_command),
-        dynamic_content=DynamicContent(dynamic_content).value,
-        matrix_rows_sent=assembled.metadata.get("matrix_rows_sent"),
+        # Leftovers of the removed content switch. The column is NOT NULL, so it
+        # still has to be written; "features" is what the user turn now always
+        # carries. `matrix_rows_sent` is left null because no matrix is sent.
+        # Migration 0011 replaces both with the feature source and the filter
+        # parameters, which are the variables that actually vary now.
+        dynamic_content="features",
         system_prompt_text=assembled.system_prompt,
         technical_context_text=assembled.technical_context,
         emg_context_text=assembled.emg_context,
@@ -290,13 +293,13 @@ async def run_execution(
         technical_context=assembled.technical_context,
         dynamic_prompt=assembled.dynamic_prompt,
         emg_context=assembled.emg_context,
+        image_context=assembled.image_context,
         context_window=model.context_window,
         completion_reserve=config.max_tokens,
-        matrix_rows=min(window.sample_count, 64),
     )
 
     log(LogLevel.INFO, "prompt",
-        f"Assembled the three-block prompt. {budget.summary()}",
+        f"Assembled the four-block prompt. {budget.summary()}",
         chars=assembled.char_counts(),
         estimated_tokens=budget.breakdown,
         frozen_context_sha256=assembled.frozen_context_sha256,

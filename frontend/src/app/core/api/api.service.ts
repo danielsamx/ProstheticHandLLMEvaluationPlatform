@@ -6,8 +6,8 @@ import { environment } from '@env/environment';
 import { EmgMatrixFormat, EmgWindow, MatrixParseResponse } from '../models/emg.model';
 import { HandSpec, Handedness, LimitProfileId } from '../models/hand.model';
 import {
-  DynamicContent,
   Execution,
+  FeatureSource,
   ExecutionStats,
   LabPreset,
   LlmModel,
@@ -35,21 +35,16 @@ export interface RunExecutionPayload {
   sampling_configuration_id: string;
   invocation_mode?: 'structured_output' | 'tool_calling';
   window: EmgWindow;
-  mechanical_telemetry?: MechanicalTelemetry | null;
-  mvc_by_channel?: number[] | null;
   handedness: Handedness;
   system_prompt_version_id?: string | null;
   technical_context_version_id?: string | null;
   emg_context_version_id?: string | null;
-  dynamic_prompt_template_id?: string | null;
   system_prompt_override?: string | null;
   technical_context_override?: string | null;
   emg_context_override?: string | null;
-  dynamic_template_override?: string | null;
-  /** What the dynamic block carries. An experimental variable, not a view. */
-  dynamic_content?: DynamicContent;
-  /** Cap on printed matrix rows; null sends the whole window. */
-  matrix_max_rows?: number | null;
+  /** The preprocessing toggle. It governs the plotted signal and the feature
+   *  table together: an experimental variable, not a view preference. */
+  feature_source?: FeatureSource;
   /** The answer key. Stored and compared, never placed in a prompt. */
   expected_serial_command?: string | null;
   limit_profile?: LimitProfileId | null;
@@ -204,15 +199,11 @@ export class ApiService {
     return this.http.post<PromptVersion>(`${this.base}/prompts/emg-context`, body);
   }
 
-  listDynamicTemplates(): Observable<PromptVersion[]> {
-    return this.http.get<PromptVersion[]>(`${this.base}/prompts/dynamic-templates`);
-  }
-
-  createDynamicTemplate(body: {
-    name: string; version: string; content: string; description?: string; activate: boolean;
-  }): Observable<PromptVersion> {
-    return this.http.post<PromptVersion>(`${this.base}/prompts/dynamic-templates`, body);
-  }
+  // No client for `/prompts/dynamic-templates`. The endpoints still exist,
+  // because the rows are what executions recorded before this flow point at,
+  // but the user turn is generated from the analysis and no stored template can
+  // reach a prompt. A method here would be a way back into a path that no
+  // longer runs.
 
   previewPrompt(body: Record<string, unknown>): Observable<PromptPreview> {
     return this.http.post<PromptPreview>(`${this.base}/prompts/preview`, body);

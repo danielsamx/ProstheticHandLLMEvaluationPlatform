@@ -344,22 +344,35 @@ def test_short_windows_are_not_decimated():
 # ── No preprocessing ────────────────────────────────────────────────────────
 
 
-def test_a_file_reaches_the_prompt_unmodified():
-    """The whole point of removing normalisation: nothing between the electrode
-    and the model can alter what it is judged on."""
+def test_a_file_reaches_the_analysis_unmodified():
+    """Nothing between the electrode and the analysis alters the samples.
+
+    The claim is narrower than it was. The file no longer reaches the *prompt*
+    unmodified — the whole point of the current flow is that it is filtered,
+    rectified, smoothed and drawn. What must still hold is that loading changes
+    nothing: every transformation the model is judged on happens inside
+    `analyse`, where it is recorded, and none of it happens in the parser.
+    """
     from pathlib import Path
 
-    from app.prompts.dynamic_prompt import render_dynamic_prompt
-    from app.domain.hand_spec import Handedness
+    from app.services.analysis_service import FeatureSource, analyse
 
     fixture = Path(__file__).parent / "fixtures" / "apertura_mano_muestra_02.csv"
     matrix = parse_matrix_text(fixture.read_text())
     window = EmgWindow(samples=matrix, sample_rate_hz=1000)
 
     assert window.samples == matrix
-    # The first row of the file, verbatim, must appear in the rendered block.
-    block = render_dynamic_prompt(window, handedness=Handedness.RIGHT)
-    assert "-2.000" in block or "-2." in block
+
+    # With preprocessing off, nothing is computed between the file and the
+    # picture: no envelope exists, and the filter metadata is empty rather than
+    # describing a chain that never ran.
+    raw = analyse(
+        window.samples,
+        sample_rate_hz=window.sample_rate_hz,
+        feature_source=FeatureSource.RAW,
+    )
+    assert raw.envelope is None
+    assert raw.preprocessing == {}
 
 
 def test_features_are_reported_in_acquisition_units():

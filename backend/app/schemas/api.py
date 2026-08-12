@@ -9,9 +9,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.hand_spec import Handedness, LimitProfileId
-from app.prompts.dynamic_prompt import DynamicContent
 from app.schemas.emg import EmgWindow
-from app.schemas.multimodal import MechanicalTelemetry
+from app.services.analysis_service import DEFAULT_FEATURE_SOURCE, FeatureSource
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Providers & models
@@ -216,24 +215,18 @@ class PromptPreviewIn(BaseModel):
     """
 
     window: EmgWindow
-    mechanical_telemetry: MechanicalTelemetry | None = None
-    mvc_by_channel: list[float] | None = Field(default=None, min_length=8, max_length=8)
     handedness: Handedness = Handedness.RIGHT
     #: Supplied so the preview can compare against that model's context window.
     model_id: uuid.UUID | None = None
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
     emg_context_version_id: uuid.UUID | None = None
-    dynamic_prompt_template_id: uuid.UUID | None = None
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
     emg_context_override: str | None = None
-    dynamic_template_override: str | None = None
-    #: What the dynamic block carries: the raw matrix, the derived descriptors,
-    #: or both. An experimental variable, not a display preference.
-    dynamic_content: DynamicContent = DynamicContent.MATRIX
-    #: Cap on printed matrix rows. None (the default) sends the whole window.
-    matrix_max_rows: int | None = Field(default=None, ge=1)
+    #: The preprocessing toggle: it governs the plotted signal and the feature
+    #: table together. An experimental variable, not a display preference.
+    feature_source: FeatureSource = DEFAULT_FEATURE_SOURCE
     #: The command a domain expert says this window should produce. Optional,
     #: stored verbatim, and compared against what the model returned. It is a
     #: label, never an input: it is not placed in any prompt.
@@ -250,9 +243,20 @@ class PromptPreviewOut(BaseModel):
     system_prompt: str
     technical_context: str
     emg_context: str
+    #: The user turn's text: the derived feature table.
     dynamic_prompt: str
+    #: Every text block joined. Not the whole stimulus — the picture is not text.
     full_prompt: str
-    messages: list[dict[str, str]]
+    #: The third block, and the picture it describes.
+    image_context: str = ""
+    image_data_url: str | None = None
+    image_sha256: str | None = None
+    image_context_sha256: str = ""
+    #: `content` is a list of typed parts: the user turn carries text plus the
+    #: picture. Typed as `Any` rather than a union because Pydantic would
+    #: otherwise coerce the multimodal list into a string representation and the
+    #: preview would show the model's stimulus as a mangled repr of itself.
+    messages: list[dict[str, Any]]
     limit_profile: str
     char_counts: dict[str, int]
     system_prompt_sha256: str
@@ -261,19 +265,17 @@ class PromptPreviewOut(BaseModel):
     dynamic_prompt_sha256: str
     frozen_context_sha256: str
     full_prompt_sha256: str
-    #: Weighted estimate. A plain characters/4 heuristic under-counts this
-    #: content by more than half: the EMG matrix is almost entirely numbers, and
-    #: a signed three-decimal value costs three to four tokens.
+    #: Weighted estimate of the *text* only. The picture also occupies context
+    #: at a rate that depends on the vision encoder, so this is a floor.
     estimated_prompt_tokens: int
     token_breakdown: dict[str, int] = Field(default_factory=dict)
     context_window: int | None = None
     fits_context: bool = True
     budget_advice: list[str] = Field(default_factory=list)
-    #: What the preview actually rendered. Echoed back so the panel can state
-    #: "64 of 404 rows" from the server's own answer rather than re-deriving it
-    #: and risking a figure that disagrees with the text beside it.
-    matrix_rows_sent: int = 0
-    dynamic_content: str = "matrix"
+    #: Which signal was drawn and measured. Echoed back from the server's own
+    #: answer so the panel cannot label the picture from its own copy of the
+    #: toggle and disagree with what was rendered.
+    feature_source: str = DEFAULT_FEATURE_SOURCE.value
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -290,22 +292,16 @@ class RunExecutionIn(BaseModel):
     sampling_configuration_id: uuid.UUID
     invocation_mode: Literal["structured_output", "tool_calling"] = "structured_output"
     window: EmgWindow
-    mechanical_telemetry: MechanicalTelemetry | None = None
-    mvc_by_channel: list[float] | None = Field(default=None, min_length=8, max_length=8)
     handedness: Handedness = Handedness.RIGHT
     system_prompt_version_id: uuid.UUID | None = None
     technical_context_version_id: uuid.UUID | None = None
     emg_context_version_id: uuid.UUID | None = None
-    dynamic_prompt_template_id: uuid.UUID | None = None
     system_prompt_override: str | None = None
     technical_context_override: str | None = None
     emg_context_override: str | None = None
-    dynamic_template_override: str | None = None
-    #: What the dynamic block carries: the raw matrix, the derived descriptors,
-    #: or both. An experimental variable, not a display preference.
-    dynamic_content: DynamicContent = DynamicContent.MATRIX
-    #: Cap on printed matrix rows. None (the default) sends the whole window.
-    matrix_max_rows: int | None = Field(default=None, ge=1)
+    #: The preprocessing toggle: it governs the plotted signal and the feature
+    #: table together. An experimental variable, not a display preference.
+    feature_source: FeatureSource = DEFAULT_FEATURE_SOURCE
     #: The command a domain expert says this window should produce. Optional,
     #: stored verbatim, and compared against what the model returned. It is a
     #: label, never an input: it is not placed in any prompt.

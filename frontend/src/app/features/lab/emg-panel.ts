@@ -109,39 +109,24 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         is only a measurement when both are decided.
       -->
       <div class="flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
-        @if (false) {
-        <div style="display: flex; flex-direction: column;">
-          <label class="lab-label">Dynamic prompt</label>
-          <mat-button-toggle-group class="dense-toggle-group"
-                                  [ngModel]="store.dynamicContent()"
-                                  (ngModelChange)="store.setDynamicContent($event)"
-                                  style="height: 38px; min-height: 38px; display: inline-flex; flex-direction: row; flex-wrap: nowrap; width: auto; align-items: center; border-radius: 6px; overflow: hidden;"
-                                  hideSingleSelectionIndicator>
-            <mat-button-toggle value="matrix"
-                              matTooltip="The raw N × 8 sample matrix only..."
-                              [matTooltipPosition]="'above'"
-                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
-              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Matrix</span>
-            </mat-button-toggle>
-            <mat-button-toggle value="features"
-                              matTooltip="The derived per-channel descriptors only..."
-                              [matTooltipPosition]="'above'"
-                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
-              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Features</span>
-            </mat-button-toggle>
-            <mat-button-toggle value="both"
-                              matTooltip="Matrix first, then the descriptors..."
-                              [matTooltipPosition]="'above'"
-                              style="height: 38px; min-height: 38px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0 16px; border: none; border-radius: 0; font-size: 13px;">
-              <span style="line-height: 38px; display: flex; align-items: center; height: 100%; font-size: 13px;">Both</span>
-            </mat-button-toggle>
-          </mat-button-toggle-group>
-        </div>
-
-        }
+        <!--
+          One toggle, both halves of the stimulus. It decides whether the plot
+          the model is shown and the descriptors it is given come from the
+          linear envelope or from the raw window - never one of each, which
+          would hand it two views of the same signal processed differently.
+        -->
         <div class="flex flex-col gap-1">
-          <label class="lab-label">Model input</label>
-          <span class="lab-chip bg-navy text-white">Semantic sEMG + encoder state</span>
+          <label class="lab-label"
+                 matTooltip="Governs the image and the feature table together: notch, band-pass, rectify and low-pass to the linear envelope, or the window exactly as acquired.">
+            Preprocessing
+          </label>
+          <mat-button-toggle-group class="dense-toggle-group"
+                                   [ngModel]="store.featureSource()"
+                                   (ngModelChange)="store.setFeatureSource($event)"
+                                   hideSingleSelectionIndicator>
+            <mat-button-toggle value="preprocessed">Envelope</mat-button-toggle>
+            <mat-button-toggle value="raw">Raw</mat-button-toggle>
+          </mat-button-toggle-group>
         </div>
 
         <div class="min-w-[170px] flex-1">
@@ -158,49 +143,10 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         </div>
 
         <!--
-          The row budget only appears when the matrix is actually being sent and
-          the window is long enough for the choice to matter. Showing it always
-          would put a knob on screen that most runs never need to touch.
+          The row budget is gone with the matrix. No number of rows is sent, so
+          there is nothing to cap: the window becomes one picture and eight rows
+          of descriptors whatever its length.
         -->
-        @if ((store.dynamicContent() === 'matrix' || store.dynamicContent() === 'both')
-            && (store.sampleCount() > 64 || store.matrixMaxRows() !== null)) {
-          <div>
-            <label class="lab-label"
-                   matTooltip="Blank sends every row. A cap decimates across the whole window rather than truncating it, so the excerpt still spans the movement.">
-              Rows sent
-            </label>
-            <!--
-              A number input fires on every keystroke, so binding it straight to
-              the run would mean typing "128" briefly requested 1 row and then
-              12. Hence a draft.
-
-              But a draft that only commits on a button press is its own trap:
-              type 32, press Run, and the run silently uses the old value. So it
-              also commits on blur and on Enter. The button stays because it is
-              discoverable and gives the change an explicit moment — it is no
-              longer the *only* way to apply it.
-            -->
-            <div class="flex items-center gap-1">
-              <mat-form-field appearance="outline" class="dense-field !w-24">
-                <input matInput type="number" min="1" [max]="store.sampleCount()"
-                       [placeholder]="store.sampleCount() + ' (all)'"
-                       [ngModel]="rowsDraft()"
-                       (ngModelChange)="rowsDraft.set($event === null || $event === '' ? null : +$event)"
-                       (blur)="applyRows()"
-                       (keyup.enter)="applyRows()" />
-              </mat-form-field>
-              <button mat-flat-button color="primary"
-                      class="!mb-0.5 !h-[34px] !min-w-0 !px-2.5 !text-[11px]"
-                      [disabled]="!rowsChanged()"
-                      [matTooltip]="rowsChanged()
-                        ? 'Apply this row count and re-render the preview'
-                        : 'Already applied'"
-                      (click)="applyRows()">
-                Apply
-              </button>
-            </div>
-          </div>
-        }
       </div>
 
       <!--
@@ -210,21 +156,14 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         to end.
       -->
       @if (store.promptPreview(); as preview) {
-        <div class="flex items-center gap-1.5 text-[11px]"
-             [class]="preview.matrix_rows_sent < store.sampleCount()
-               ? 'text-amber' : 'text-ink-500'">
-          <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">
-            {{ preview.dynamic_content === 'features' ? 'functions' : 'table_rows' }}
-          </mat-icon>
-          @if (preview.dynamic_content === 'semantic') {
-            The prompt carries semantic sEMG and encoder state; raw rows are not sent.
-          } @else if (preview.dynamic_content === 'features') {
-            The prompt carries the derived descriptors only — no matrix rows.
-          } @else if (preview.matrix_rows_sent >= store.sampleCount()) {
-            The prompt carries all {{ store.sampleCount() }} rows.
+        <div class="flex items-center gap-1.5 text-[11px] text-ink-500">
+          <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">image</mat-icon>
+          @if (preview.feature_source === 'preprocessed') {
+            The prompt carries the envelope plot and descriptors taken from it.
+            No samples are sent as text.
           } @else {
-            The prompt carries {{ preview.matrix_rows_sent }} of
-            {{ store.sampleCount() }} rows, evenly spaced across the window.
+            The prompt carries the unfiltered window, plotted, and descriptors
+            taken from it. No samples are sent as text.
           }
         </div>
       }
@@ -423,29 +362,6 @@ export class EmgPanel {
   protected readonly store = inject(LabStore);
   protected readonly stream = inject(EmgStreamService);
   protected readonly Math = Math;
-
-  /**
-   * Draft row cap, committed by Apply rather than on every keystroke.
-   *
-   * Seeded from the store so the field opens showing what is actually in
-   * effect, and compared against it so the button can say whether there is
-   * anything to apply.
-   */
-  protected readonly rowsDraft = signal<number | null>(this.store.matrixMaxRows());
-
-  protected rowsChanged(): boolean {
-    return this.rowsDraft() !== this.store.matrixMaxRows();
-  }
-
-  protected applyRows(): void {
-    const value = this.rowsDraft();
-    // A cap at or above the window length is not a cap. Storing it as null
-    // keeps one meaning for "everything" instead of two that behave alike but
-    // record differently.
-    const capped = value === null || value >= this.store.sampleCount() ? null : Math.max(1, value);
-    this.rowsDraft.set(capped);
-    void this.store.setMatrixMaxRows(capped);
-  }
 
   /** Acquisition units span orders of magnitude; fixed decimals do not suit them. */
   protected num(value: number): string {

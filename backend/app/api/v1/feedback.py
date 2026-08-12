@@ -13,10 +13,8 @@ from app.domain.hand_spec import Handedness
 from app.models.experiment import Execution
 from app.models.feedback import GestureFeedback
 from app.models.user import User
-from app.prompts.dynamic_prompt import DynamicContent
 from app.schemas.emg import EmgSourceMode, EmgWindow
 from app.schemas.feedback import FeedbackResult, GestureFeedbackIn, GestureFeedbackOut
-from app.schemas.multimodal import MechanicalTelemetry
 from app.services.execution_service import run_execution
 
 router = APIRouter(prefix="/feedback", tags=["gesture-feedback"])
@@ -67,18 +65,16 @@ async def submit_feedback(execution_id: uuid.UUID, payload: GestureFeedbackIn,
             "sensor_evidence": payload.sensor_snapshot,
             "instruction": "Correct the command using this feedback. Return only the required JSON object.",
         }
-        prior_dynamic = execution.dynamic_prompt_text or ""
-        corrective_dynamic = prior_dynamic + "\n\nGESTURE EXECUTION FEEDBACK:\n" + json.dumps(evidence)
+        # Appended to the regenerated user turn, not prepended to a copy of the
+        # previous one. The stimulus is rebuilt from the same window — the same
+        # picture, the same descriptors — so the only difference between the two
+        # runs is this note, which is what makes the pair worth comparing.
+        feedback_note = "GESTURE EXECUTION FEEDBACK:\n" + json.dumps(evidence)
         record = execution.emg_window
         window = EmgWindow(
             samples=record.samples, source_mode=EmgSourceMode(record.source_mode),
             sample_rate_hz=record.sample_rate_hz, captured_at=record.captured_at,
             ground_truth_gesture=record.ground_truth_gesture, notes=record.notes,
-        )
-        telemetry_payload = payload.sensor_snapshot.get("mechanical_telemetry")
-        mechanical_telemetry = (
-            MechanicalTelemetry.model_validate(telemetry_payload)
-            if telemetry_payload else None
         )
         correction = await run_execution(
             session, sampling_configuration_id=execution.sampling_configuration_id,
@@ -89,14 +85,12 @@ async def submit_feedback(execution_id: uuid.UUID, payload: GestureFeedbackIn,
             system_prompt_override=execution.system_prompt_text,
             technical_context_override=execution.technical_context_text,
             emg_context_override=execution.emg_context_text,
-            dynamic_template_override=corrective_dynamic,
-            dynamic_content=DynamicContent(execution.dynamic_content),
+            feedback_note=feedback_note,
             expected_serial_command=execution.expected_serial_command,
             limit_profile_id=execution.limit_profile, experiment_id=execution.experiment_id,
             project_id=execution.project_id, triggered_by_id=user.id,
             experiment_type="feedback_correction",
             subject_ref=record.subject_ref,
-            mechanical_telemetry=mechanical_telemetry,
             extra_parameters={"feedback_parent_execution": str(execution.id),
                               "feedback_attempt": current_attempt + 1},
         )

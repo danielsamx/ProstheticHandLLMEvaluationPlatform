@@ -128,7 +128,7 @@ One row per **distinct combination** of the three frozen blocks, unique on
 
 Deduplicated at write time: three hundred runs under one setup leave one row,
 changing a block files a second, and returning to the first reuses it and touches
-`last_used_at`. Carries `label` (`S1.0 · T1.1 · E1.1`), the three version foreign
+`last_used_at`. Carries `label` (`S1.0 · T1.0 · E1.0`), the three version foreign
 keys **and** the version strings copied in, plus `frozen_context_text`.
 
 The strings are copied rather than only referenced on purpose. The foreign keys are
@@ -361,6 +361,8 @@ ORDER BY created_at DESC;
 | `0006_emg_context_block` | `emg_context_versions` and the fourth block on executions |
 | `0007_prompt_configurations` | `prompt_configurations`, deduplicated on the frozen digest |
 | `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
+| `0009_auth_myo_feedback` | Authentication roles, Myo acquisition settings and gesture feedback |
+| `0010_feedback_timestamp_defaults` | Server-side defaults for the feedback timestamps |
 | `0009_auth_myo_feedback` | Four-role accounts, authentication support and auditable gesture feedback |
 
 `0002` deletes existing windows and executions. A feature vector does not

@@ -15,6 +15,21 @@ import { LanguageService, TranslatePipe } from '@core/services/language.service'
   imports: [MatIconModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet, TranslatePipe],
   template: `
     <div class="flex h-screen w-screen flex-col bg-white text-navy">
+      <!--
+        No chrome without a session.
+
+        Rendered around the login screen, the header offers a navigation bar
+        whose every link bounces straight back to login, plus a sign-in button
+        on the page you are already on. Hiding it is not only tidier: a
+        stranger should not be shown the shape of the application, nor the
+        institution's logo and connection state, before they have identified
+        themselves.
+
+        Gated on the resolved signal as well, so a returning user with a valid
+        token does not see the header flash away and back while the identity
+        request is still in flight.
+      -->
+      @if (auth.resolved() && auth.authenticated()) {
       <header class="shrink-0 border-b border-ink-200 bg-white">
         <div class="flex h-[72px] items-center gap-4 px-3 sm:px-5 lg:px-7">
           @if (logoAvailable()) {
@@ -79,6 +94,7 @@ import { LanguageService, TranslatePipe } from '@core/services/language.service'
           </div>
         </div>
       </header>
+      }
       <main class="min-h-0 flex-1"><router-outlet /></main>
     </div>
   `,

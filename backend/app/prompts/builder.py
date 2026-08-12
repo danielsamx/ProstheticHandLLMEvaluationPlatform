@@ -5,16 +5,19 @@
     +-----------------------------+
                   +
     +-----------------------------+
-    |      TECHNICAL CONTEXT      |   frozen hardware description
-    +-----------------------------+
-                  +
-    +-----------------------------+
     |     EMG KNOWLEDGE CONTEXT   |   frozen interpretation guidance
     +-----------------------------+
                   +
     +-----------------------------+
-    |       DYNAMIC PROMPT        |   the EMG window for this run
+    |        IMAGE CONTEXT        |   frozen description of the plot
     +-----------------------------+
+                  +
+    +-----------------------------+
+    |      TECHNICAL CONTEXT      |   frozen hardware contract, open/close only
+    +-----------------------------+
+                  |
+                  v
+      user turn: feature table + PNG
                   |
                   v
                LiteLLM
@@ -22,9 +25,20 @@
                   v
              JSON response
 
-The researcher never writes this by hand.  ``build_prompt`` is the single entry
-point used by the execution service, and it also produces the SHA-256 digests
-that let us prove after the fact that two runs saw byte-identical inputs.
+The order is deliberate. The two EMG blocks sit together because they answer one
+question between them — *what am I looking at* — and the hardware contract comes
+last, closest to the answer it constrains.
+
+The researcher never writes this by hand. ``build_prompt`` is the single entry
+point used by the execution service and by the preview endpoint, and it also
+produces the SHA-256 digests that let us prove after the fact that two runs saw
+byte-identical inputs.
+
+There is one flow. The selectable dynamic block — raw matrix, features, both,
+semantic — is gone, along with the stored template that rendered it: with the
+picture as the stimulus, printing the matrix beside it sent the model two
+representations of the same window, processed differently, and let it choose
+which to believe.
 """
 
 from __future__ import annotations
@@ -34,18 +48,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.hand_spec import Handedness, LimitProfile, get_limit_profile
-from app.prompts.dynamic_prompt import (
-    DEFAULT_CONTENT,
-    DEFAULT_MATRIX_MAX_ROWS,
-    DynamicContent,
-    render_dynamic_prompt,
-    rendered_row_count,
-)
 from app.prompts.emg_context import build_emg_context
+from app.prompts.image_context import build_image_context
 from app.prompts.system_prompt import default_system_prompt
-from app.prompts.technical_context import build_technical_context
+from app.prompts.technical_context import build_technical_context_open_close
 from app.schemas.emg import EmgWindow
-from app.schemas.multimodal import MechanicalTelemetry
+from app.services.analysis_service import (
+    DEFAULT_FEATURE_SOURCE,
+    FeatureSource,
+    analyse,
+    applied_bandpass_high_hz,
+    render_feature_block,
+)
 
 #: Separator between blocks.
 #:
@@ -68,47 +82,64 @@ class AssembledPrompt:
     system_prompt: str
     technical_context: str
     emg_context: str
+    image_context: str
+    #: The user turn's text: the derived feature table.
+    #:
+    #: Still called ``dynamic_prompt`` because that is the name of the column it
+    #: is persisted in and of the field the interface reads. Renaming it is a
+    #: migration, not an edit, and doing it here would leave the record and the
+    #: code disagreeing about the same string.
     dynamic_prompt: str
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     limit_profile: str
+    #: The picture itself, as the data URL that travels in the user message.
+    image_data_url: str | None = None
+    image_sha256: str | None = None
+    image_context_sha256: str = ""
     system_prompt_sha256: str = ""
     technical_context_sha256: str = ""
     emg_context_sha256: str = ""
     dynamic_prompt_sha256: str = ""
     full_prompt_sha256: str = ""
-    #: Hash of every frozen block: system + technical context + EMG context.
+    #: Hash of every frozen block: system + EMG + image + technical.
     #:
-    #: All three now, not two. The EMG guidance changes what the model is told
-    #: to conclude from the same signal, so two runs that saw different guidance
-    #: are not comparable — and if this hash ignored block 3, the platform would
-    #: report them as comparable while they were not. That is a worse failure
-    #: than reporting too few comparisons.
+    #: All four, not two. The EMG guidance changes what the model is told to
+    #: conclude from the same signal, and the image context changes what it is
+    #: told the picture means, so two runs that saw different guidance are not
+    #: comparable — and if this hash ignored them, the platform would report
+    #: them as comparable while they were not. That is a worse failure than
+    #: reporting too few comparisons.
     frozen_context_sha256: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def frozen_blocks(self) -> list[str]:
+        """The frozen blocks, in the order the model reads them."""
+        return [
+            self.system_prompt,
+            self.emg_context,
+            self.image_context,
+            self.technical_context,
+        ]
+
+    @property
     def frozen_context(self) -> str:
         """Everything identical between runs, in the order the model sees it."""
-        return BLOCK_SEPARATOR.join(
-            [self.system_prompt, self.technical_context, self.emg_context]
-        )
+        return BLOCK_SEPARATOR.join(self.frozen_blocks)
 
     @property
     def full_prompt(self) -> str:
-        return BLOCK_SEPARATOR.join(
-            [
-                self.system_prompt,
-                self.technical_context,
-                self.emg_context,
-                self.dynamic_prompt,
-            ]
-        )
+        """The text of the stimulus. Not the whole stimulus: the picture is not
+        text and cannot appear here, which is why the image digest is carried
+        separately and why this string alone never proves what was sent."""
+        return BLOCK_SEPARATOR.join([*self.frozen_blocks, self.dynamic_prompt])
 
     def char_counts(self) -> dict[str, int]:
         return {
             "system_prompt": len(self.system_prompt),
             "technical_context": len(self.technical_context),
             "emg_context": len(self.emg_context),
+            "image_context": len(self.image_context),
             "dynamic_prompt": len(self.dynamic_prompt),
             "total": len(self.full_prompt),
         }
@@ -121,102 +152,108 @@ def build_prompt(
     system_prompt: str | None = None,
     technical_context: str | None = None,
     emg_context: str | None = None,
-    dynamic_template: str | None = None,
-    dynamic_content: DynamicContent | str = DEFAULT_CONTENT,
-    matrix_max_rows: int | None = DEFAULT_MATRIX_MAX_ROWS,
     limit_profile: LimitProfile | None = None,
     experiment_type: str = "single_inference",
-    subject_ref: str | None = None,
-    subject_notes: str | None = None,
-    extra_parameters: dict[str, Any] | None = None,
-    mechanical_telemetry: MechanicalTelemetry | None = None,
-    mvc_by_channel: list[float] | None = None,
     merge_context_into_system: bool = True,
+    feature_source: FeatureSource | str = DEFAULT_FEATURE_SOURCE,
+    feedback_note: str | None = None,
 ) -> AssembledPrompt:
     """Assemble the final prompt.
 
     Parameters
     ----------
     merge_context_into_system
-        When ``True`` (default) the technical context is appended to the system
-        message and only the dynamic block becomes the user turn.  This keeps
+        When ``True`` (default) the frozen blocks form the system message and
+        only the feature table and the picture become the user turn. This keeps
         the frozen material in the system role, which is what most providers
-        cache and what keeps the user turn minimal - exactly the separation the
-        experimental design requires.  Set to ``False`` for providers or local
-        runtimes (some LM Studio presets, for instance) that handle long system
-        messages poorly; the context then becomes a leading user message.
+        cache and what keeps the user turn minimal — exactly the separation the
+        experimental design requires. Set to ``False`` for runtimes (some LM
+        Studio presets) that handle long system messages poorly; the context
+        then becomes a leading user message.
+    feature_source
+        The preprocessing toggle. Governs the picture and the table together —
+        see :mod:`app.services.analysis_service`.
+    feedback_note
+        Appended to the user turn by the corrective-retry path, which re-runs a
+        window with a reviewer's account of what the hand actually did. The one
+        sanctioned way to add text to the user turn: it exists so that path does
+        not need a general template mechanism, whose only other use was to let a
+        stored artefact silently replace the stimulus.
+
+    The technical context defaults to the open/close variant, not the full
+    fourteen-gesture contract: the reduced vocabulary is only meaningful if that
+    table is *gone*, since leaving it in place and adding "but only answer O or
+    C" would give the model two contradictory contracts and let it pick. The
+    seed stores that same reduced text, so a stored artefact passed here agrees
+    with the default instead of quietly reinstating the old contract.
+
+    The image context is not an argument at all. It has to describe the filter
+    that actually ran on *this* window — clamped by its sampling rate, or absent
+    entirely when the toggle is off — so it cannot be a stored text that was
+    written before the window existed.
     """
     profile = limit_profile or get_limit_profile()
 
-    # Semantic mode is the production path for the current project. Historical
-    # prompt rows remain in the database for reproducibility, but must not leak
-    # into a new semantic execution selected by the current interface.
-    semantic_mode = DynamicContent(dynamic_content) is DynamicContent.SEMANTIC
-
-    semantic_system_compatible = bool(
-        system_prompt
-        and "semantic" in system_prompt.lower()
-        and "execute_handi_command" in system_prompt
-    )
-    semantic_context_compatible = bool(
-        technical_context and "Encoder policy" in technical_context
-    )
-    semantic_emg_compatible = bool(
-        emg_context
-        and "semantic" in emg_context.lower()
-        and not any(token in emg_context for token in ("- RMS", "- MAV", "- ZC", "- SSC", "- WL"))
+    analysis = analyse(
+        window.samples,
+        sample_rate_hz=window.sample_rate_hz,
+        feature_source=feature_source,
     )
 
-    system_text = (
-        system_prompt if semantic_mode and semantic_system_compatible
-        else default_system_prompt() if semantic_mode
-        else system_prompt if system_prompt is not None else default_system_prompt()
+    system_text = system_prompt if system_prompt is not None else default_system_prompt()
+    emg_text = emg_context if emg_context is not None else build_emg_context()
+    image_context_text = build_image_context(
+        preprocessed=analysis.feature_source is FeatureSource.PREPROCESSED,
+        bandpass_high_hz=applied_bandpass_high_hz(analysis.preprocessing),
     )
     context_text = (
-        technical_context if semantic_mode and semantic_context_compatible
-        else build_technical_context(profile) if semantic_mode
-        else technical_context
+        technical_context
         if technical_context is not None
-        else build_technical_context(profile)
-    )
-    emg_text = (
-        emg_context if semantic_mode and semantic_emg_compatible
-        else build_emg_context() if semantic_mode
-        else emg_context if emg_context is not None else build_emg_context()
-    )
-    dynamic_text = render_dynamic_prompt(
-        window,
-        content=dynamic_content,
-        matrix_max_rows=matrix_max_rows,
-        handedness=handedness,
-        experiment_type=experiment_type,
-        subject_ref=subject_ref,
-        subject_notes=subject_notes,
-        extra_parameters=extra_parameters,
-        mechanical_telemetry=mechanical_telemetry,
-        mvc_by_channel=mvc_by_channel,
-        template=dynamic_template,
+        else build_technical_context_open_close()
     )
 
-    frozen = BLOCK_SEPARATOR.join([system_text, context_text, emg_text])
+    dynamic_text = render_feature_block(analysis.features)
+    if feedback_note:
+        dynamic_text = f"{dynamic_text}\n\n{feedback_note}"
+
+    blocks = [system_text, emg_text, image_context_text, context_text]
+    frozen = BLOCK_SEPARATOR.join(blocks)
+
+    # The user turn carries text plus the picture. A multimodal turn is a list of
+    # typed parts rather than a string, which is why a model without vision
+    # cannot be offered for this flow at all.
+    user_content: Any = [
+        {"type": "text", "text": dynamic_text},
+        {"type": "image_url", "image_url": {"url": analysis.image.data_url}},
+    ] if analysis.image else dynamic_text
 
     if merge_context_into_system:
         messages = [
             {"role": "system", "content": frozen},
-            {"role": "user", "content": dynamic_text},
+            {"role": "user", "content": user_content},
         ]
     else:
+        leading = BLOCK_SEPARATOR.join([*blocks[1:], dynamic_text])
         messages = [
             {"role": "system", "content": system_text},
-            {"role": "user", "content": BLOCK_SEPARATOR.join(
-                [context_text, emg_text, dynamic_text]
-            )},
+            {
+                "role": "user",
+                "content": (
+                    [
+                        {"type": "text", "text": leading},
+                        {"type": "image_url", "image_url": {"url": analysis.image.data_url}},
+                    ]
+                    if analysis.image
+                    else leading
+                ),
+            },
         ]
 
     assembled = AssembledPrompt(
         system_prompt=system_text,
         technical_context=context_text,
         emg_context=emg_text,
+        image_context=image_context_text,
         dynamic_prompt=dynamic_text,
         messages=messages,
         limit_profile=profile.id.value,
@@ -225,22 +262,24 @@ def build_prompt(
             "experiment_type": experiment_type,
             "emg_source_mode": window.source_mode.value,
             "merge_context_into_system": merge_context_into_system,
-            # Recorded because it changes what the model was shown. Two runs
-            # over the same window with different content are different
-            # experiments, and the record has to say which one happened.
-            "dynamic_content": DynamicContent(dynamic_content).value,
-            "matrix_rows_sent": rendered_row_count(
-                window,
-                content=dynamic_content,
-                max_rows=matrix_max_rows,
-                template=dynamic_template,
-            ),
+            **analysis.provenance(),
+            "features": analysis.features,
         },
     )
+    assembled.image_data_url = analysis.image.data_url if analysis.image else None
+    assembled.image_sha256 = analysis.image.sha256 if analysis.image else None
+
     assembled.system_prompt_sha256 = sha256(system_text)
     assembled.technical_context_sha256 = sha256(context_text)
     assembled.emg_context_sha256 = sha256(emg_text)
+    assembled.image_context_sha256 = sha256(image_context_text)
     assembled.dynamic_prompt_sha256 = sha256(dynamic_text)
     assembled.frozen_context_sha256 = sha256(assembled.frozen_context)
     assembled.full_prompt_sha256 = sha256(assembled.full_prompt)
+
+    # The image is part of the stimulus but not part of any text block, so it
+    # cannot reach `frozen_context_sha256` — which is correct: the digest is the
+    # *comparability* key, and two runs over different windows with the same
+    # blocks are still comparable. The image identity is carried separately, on
+    # the execution, where it belongs.
     return assembled

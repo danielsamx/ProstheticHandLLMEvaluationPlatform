@@ -19,7 +19,6 @@ from app.domain.hand_spec import LimitProfileId, get_limit_profile
 from app.models.experiment import Execution
 from app.models.llm import LlmModel, LlmProvider, SamplingConfiguration
 from app.models.prompts import (
-    DynamicPromptTemplate,
     EmgContextVersion,
     SystemPromptVersion,
     TechnicalContextVersion,
@@ -29,21 +28,15 @@ from app.prompts.emg_context import (
     EMG_CONTEXT_VERSION,
     build_emg_context,
 )
-from app.prompts.dynamic_prompt import (
-    DEFAULT_CONTENT,
-    DYNAMIC_TEMPLATE_NAME,
-    DYNAMIC_TEMPLATE_VERSION,
-    TEMPLATES,
-)
 from app.prompts.system_prompt import (
     SYSTEM_PROMPT,
     SYSTEM_PROMPT_NAME,
     SYSTEM_PROMPT_VERSION,
 )
 from app.prompts.technical_context import (
-    TECHNICAL_CONTEXT_NAME,
-    TECHNICAL_CONTEXT_VERSION,
-    build_technical_context,
+    TECHNICAL_CONTEXT_OPEN_CLOSE_NAME,
+    TECHNICAL_CONTEXT_OPEN_CLOSE_VERSION,
+    build_technical_context_open_close,
 )
 
 logger = get_logger(__name__)
@@ -327,46 +320,52 @@ async def _seed_prompts(session: AsyncSession) -> None:
         await session.flush()
         logger.info("seeded_system_prompt", extra={"version": version})
 
-    # ── Block 2: one context per limit profile ──────────────────────────────
-    deactivated_contexts = False
-    for profile_id in LimitProfileId:
-        profile = get_limit_profile(profile_id)
-        content = build_technical_context(profile)
-        digest = _sha(content)
-        name = f"{TECHNICAL_CONTEXT_NAME} [{profile_id.value}]"
-        version = await _resolve_artefact_version(
-            session, TechnicalContextVersion, name, TECHNICAL_CONTEXT_VERSION, digest
-        )
-        if version is None:
-            continue
-
-        is_default = profile_id is LimitProfileId.TABLE_5_V3
-        if is_default and not deactivated_contexts:
-            await _deactivate_generated(session, TechnicalContextVersion)
-            deactivated_contexts = True
-
+    # ── Block 4: the hardware contract, open and close only ─────────────────
+    #
+    # One row, not one per limit profile. The reduced contract has no actuator
+    # table, so nothing in its text depends on the profile's bounds: seeding
+    # three identical rows under three names would file a variable that does not
+    # vary and invite a comparison between prompts that are byte-identical.
+    #
+    # The profile itself still matters — it bounds the poses the validator
+    # accepts — and is still recorded on the execution. It just no longer
+    # reaches the model, because the model no longer names positions.
+    profile = get_limit_profile(LimitProfileId.TABLE_5_V3)
+    content = build_technical_context_open_close()
+    digest = _sha(content)
+    version = await _resolve_artefact_version(
+        session,
+        TechnicalContextVersion,
+        TECHNICAL_CONTEXT_OPEN_CLOSE_NAME,
+        TECHNICAL_CONTEXT_OPEN_CLOSE_VERSION,
+        digest,
+    )
+    if version is not None:
+        await _deactivate_generated(session, TechnicalContextVersion)
         session.add(
             TechnicalContextVersion(
-                name=name,
+                name=TECHNICAL_CONTEXT_OPEN_CLOSE_NAME,
                 version=version,
                 content=content,
                 content_sha256=digest,
-                description=profile.notes,
+                description=(
+                    "Open, close, or do nothing. The fourteen-gesture contract is "
+                    "not a version of this text: it describes a different "
+                    "capability set, and executions run under the two are not "
+                    "comparable."
+                ),
                 char_count=len(content),
-                is_active=is_default,
-                is_system_default=is_default,
-                limit_profile=profile_id.value,
+                is_active=True,
+                is_system_default=True,
+                limit_profile=profile.id.value,
                 generated_from_domain=True,
-                includes_json_schema=True,
+                includes_json_schema=False,
             )
         )
         await session.flush()
-        logger.info(
-            "seeded_technical_context",
-            extra={"profile": profile_id.value, "version": version},
-        )
+        logger.info("seeded_technical_context", extra={"version": version})
 
-    # ── Block 3: EMG knowledge ──────────────────────────────────────────────
+    # ── Block 2: EMG knowledge ──────────────────────────────────────────────
     emg_text = build_emg_context()
     digest = _sha(emg_text)
     version = await _resolve_artefact_version(
@@ -393,39 +392,11 @@ async def _seed_prompts(session: AsyncSession) -> None:
         await session.flush()
         logger.info("seeded_emg_context", extra={"version": version})
 
-    # ── Block 4 ─────────────────────────────────────────────────────────────
-    # The default mode's template. The other two are selected per execution
-    # rather than stored, because they are built-in renderings rather than a
-    # researcher's saved artefact — filing all three would put rows in the
-    # catalogue that nobody authored and nobody can meaningfully edit.
-    default_template = TEMPLATES[DEFAULT_CONTENT]
-    digest = _sha(default_template)
-    version = await _resolve_artefact_version(
-        session, DynamicPromptTemplate, DYNAMIC_TEMPLATE_NAME, DYNAMIC_TEMPLATE_VERSION, digest
-    )
-    if version is not None:
-        await _deactivate_generated(session, DynamicPromptTemplate)
-        session.add(
-            DynamicPromptTemplate(
-                name=DYNAMIC_TEMPLATE_NAME,
-                version=version,
-                content=default_template,
-                content_sha256=digest,
-                description="Raw EMG matrix plus the derived feature table.",
-                char_count=len(default_template),
-                is_active=True,
-                is_system_default=True,
-                required_placeholders=[
-                    "hand", "experiment_type", "source_mode", "sample_count",
-                    "sample_rate_hz", "window_ms", "subject_block", "matrix_rows",
-                    "channel_count", "channel_order", "decimation_note",
-                    "matrix_block", "feature_block", "mean_rms", "flexor",
-                    "extensor", "extra_block",
-                ],
-            )
-        )
-        await session.flush()
-        logger.info("seeded_dynamic_template", extra={"version": version})
+    # No dynamic template is seeded. The user turn is generated from the
+    # analysis — the feature table and the picture — so there is no text a
+    # researcher could edit without editing what the numbers mean. The
+    # `dynamic_prompt_templates` table is left in place for the executions
+    # already recorded against it; migration 0011 decides its fate.
 
 
 async def _backfill_missing_configurations(session: AsyncSession) -> int:

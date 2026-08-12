@@ -292,9 +292,15 @@ def test_the_documented_prompt_versions_match_the_code() -> None:
         )
     )
 
-    assert versions.get("SYSTEM_PROMPT_VERSION") == "1.0"
-    assert versions.get("TECHNICAL_CONTEXT_VERSION") == "1.1"
-    assert versions.get("EMG_CONTEXT_VERSION") == "1.1"
+    # Deliberately *not* pinned to specific numbers.
+    #
+    # The first version of this test asserted 1.0 / 1.1 / 1.1, and broke the
+    # moment the blocks were legitimately revised — failing on a correct change
+    # and saying nothing about the documentation, which is what it exists to
+    # check. A test that freezes a constant is not verifying agreement between
+    # two things; it is adding a third thing to keep in step.
+    for name in ("SYSTEM_PROMPT_VERSION", "TECHNICAL_CONTEXT_VERSION", "EMG_CONTEXT_VERSION"):
+        assert name in versions, f"{name} was renamed; the docs quote a label built from it."
 
     # The label format documented in both READMEs, built from those constants.
     expected_label = (

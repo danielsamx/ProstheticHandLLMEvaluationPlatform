@@ -87,9 +87,21 @@ export interface PromptPreview {
   system_prompt: string;
   technical_context: string;
   emg_context: string;
+  /** Block 3: how to read the picture. Generated per window, never stored. */
+  image_context: string;
+  /** The picture itself. It is the stimulus, so the preview is incomplete
+   *  without it — a preview that does not match what will be sent is worse
+   *  than no preview, because it is trusted. */
+  image_data_url: string | null;
+  image_sha256: string | null;
+  image_context_sha256: string;
+  /** The user turn's text: the derived feature table. */
   dynamic_prompt: string;
+  /** Every text block joined. Not the whole stimulus: the picture is not text. */
   full_prompt: string;
-  messages: { role: string; content: string }[];
+  /** `content` is a list of typed parts, because the user turn carries text
+   *  plus the image. */
+  messages: { role: string; content: unknown }[];
   limit_profile: string;
   char_counts: Record<string, number>;
   system_prompt_sha256: string;
@@ -103,9 +115,9 @@ export interface PromptPreview {
   context_window: number | null;
   fits_context: boolean;
   budget_advice: string[];
-  /** What the preview actually rendered, echoed back by the server. */
-  matrix_rows_sent: number;
-  dynamic_content: DynamicContent;
+  /** Which signal was drawn and measured, echoed back by the server so the
+   *  panel cannot label the picture from its own copy of the toggle. */
+  feature_source: FeatureSource;
 }
 
 export interface ValidationIssue {
@@ -128,8 +140,16 @@ export interface ValidationResult {
   issues: ValidationIssue[];
 }
 
-/** What the dynamic prompt block carries for a given execution. */
-export type DynamicContent = 'matrix' | 'features' | 'both' | 'semantic';
+/** Which signal the model was shown and measured on.
+ *
+ *  One switch, both halves of the stimulus: it governs the plotted trace and
+ *  the descriptor table together, so the picture and the numbers can never
+ *  describe signals that were processed differently.
+ *
+ *  It replaces `DynamicContent` ('matrix' | 'features' | 'both' | 'semantic'),
+ *  which selected between renderings of a text prompt that no longer exists.
+ */
+export type FeatureSource = 'raw' | 'preprocessed';
 
 export interface ExecutionMetrics {
   is_valid_json: boolean;
@@ -193,8 +213,11 @@ export interface Execution {
   simulator_executed: boolean;
   /** The answer key this run was scored against, as it stood at run time. */
   expected_serial_command: string | null;
-  /** Which rendering of the EMG the model saw, and how much of it. */
-  dynamic_content: DynamicContent | null;
+  /** Leftovers of the removed content switch, still returned because the
+   *  columns still hold the executions recorded under it. New runs write
+   *  'features' and a null row count; migration 0011 replaces both with the
+   *  feature source and the filter parameters. */
+  dynamic_content: string | null;
   matrix_rows_sent: number | null;
   /** The distinct frozen prompt setup that produced this result. */
   prompt_configuration_id: string | null;

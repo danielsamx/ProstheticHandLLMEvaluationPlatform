@@ -1,5 +1,7 @@
 import { Routes } from '@angular/router';
 
+import { adminGuard, authGuard, guestGuard } from '@core/services/auth.guard';
+
 /**
  * Three views, deliberately.
  *
@@ -18,27 +20,61 @@ import { Routes } from '@angular/router';
  * under experiments that never happened.
  */
 export const routes: Routes = [
-  { path: 'login', title: 'Access · Prosthetic Hand Lab', loadComponent: () => import('@features/auth/login-view').then(m => m.LoginView) },
-  { path: 'users', title: 'Users · Prosthetic Hand Lab', loadComponent: () => import('@features/auth/users-view').then(m => m.UsersView) },
-  { path: 'myo', title: 'Myo · Prosthetic Hand Lab', loadComponent: () => import('@features/myo/myo-view').then(m => m.MyoView) },
-  { path: 'dataset', title: 'Dataset · Prosthetic Hand Lab', loadComponent: () => import('@features/dataset/dataset-view').then(m => m.DatasetView) },
+  // The only route reachable without a session, and unreachable with one.
+  {
+    path: 'login',
+    title: 'Access · Prosthetic Hand Lab',
+    canActivate: [guestGuard],
+    loadComponent: () => import('@features/auth/login-view').then((m) => m.LoginView),
+  },
+
+  // Everything else is guarded individually rather than nested under one
+  // parent route. A parent would be tidier, but every one of these is lazily
+  // loaded, and an unguarded parent downloads the child's bundle before the
+  // guard can refuse it — which puts the code for a view on the machine of
+  // someone who was never allowed to open it.
+  {
+    path: 'users',
+    title: 'Users · Prosthetic Hand Lab',
+    canActivate: [adminGuard],
+    loadComponent: () => import('@features/auth/users-view').then((m) => m.UsersView),
+  },
+  {
+    path: 'myo',
+    title: 'Myo · Prosthetic Hand Lab',
+    canActivate: [authGuard],
+    loadComponent: () => import('@features/myo/myo-view').then((m) => m.MyoView),
+  },
+  {
+    path: 'dataset',
+    title: 'Dataset · Prosthetic Hand Lab',
+    canActivate: [authGuard],
+    loadComponent: () => import('@features/dataset/dataset-view').then((m) => m.DatasetView),
+  },
   {
     path: 'lab',
     title: 'Laboratory · Prosthetic Hand LLM Evaluation',
+    canActivate: [authGuard],
     loadComponent: () => import('@features/lab/lab-view').then((m) => m.LabView),
   },
   {
     path: 'dashboard',
     title: 'Dashboard · Prosthetic Hand LLM Evaluation',
+    canActivate: [authGuard],
     loadComponent: () =>
       import('@features/dashboard/dashboard-view').then((m) => m.DashboardView),
   },
   {
     path: 'logs',
     title: 'Movement log · Prosthetic Hand LLM Evaluation',
+    canActivate: [authGuard],
     loadComponent: () =>
       import('@features/logs/movement-log-view').then((m) => m.MovementLogView),
   },
   { path: '', pathMatch: 'full', redirectTo: 'lab' },
+
+  // Unknown paths fall to the laboratory, which is itself guarded — so a
+  // stranger typing a wrong URL is bounced to the login screen rather than
+  // being told which routes exist.
   { path: '**', redirectTo: 'lab' },
 ];

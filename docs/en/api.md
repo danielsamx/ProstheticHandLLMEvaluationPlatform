@@ -288,7 +288,7 @@ runs and 100% of three hundred are different claims.
 ### `GET /executions/configurations`
 
 One row per distinct combination of the three frozen blocks, keyed on
-`frozen_context_sha256`. Each carries its label (`S1.0 · T1.1 · E1.1`), the three
+`frozen_context_sha256`. Each carries its label (`S1.0 · T1.0 · E1.0`), the three
 block versions, the frozen text as it stood, `first_used_at` / `last_used_at`, and
 `by_model` — results broken down per model, because a configuration is only
 comparable within one.
