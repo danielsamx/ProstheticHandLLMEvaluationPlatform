@@ -207,27 +207,29 @@ _OPEN_CLOSE_LETTERS: tuple[str, ...] = tuple(
 )
 
 
+# The response shape *offered* to the model, deliberately narrower than the one
+# that can be parsed.
+#
+# The schema is not documentation: it is sent as `response_format` or as a tool
+# signature, so the runtime constrains decoding with it. That makes it the
+# strongest statement of what the model may answer — stronger than any prose —
+# and it was contradicting the prose. The technical block says the only
+# permitted answers are O, C and no_action, while the schema offered fourteen
+# gesture letters, six actuators and an integer position each. A model reading
+# both was handed two contracts and allowed to pick, and the wider one was the
+# enforced one. A reply of `A320,B240` was then rejected by the validator and
+# recorded as the model's error, when the platform had put the vocabulary in
+# front of it.
+#
+# What is *parsed* stays wide: `ProstheticCommand` still accepts the full shape,
+# because executions recorded under the fourteen-gesture contract have to keep
+# parsing and re-judging. Narrowing what is asked for does not narrow what can
+# be read back.
+#
+# The rationale is a comment rather than a docstring on purpose: Pydantic copies
+# a class docstring into the schema's `description`, and this one would travel
+# to the model on every request as a thousand characters of platform internals.
 class OpenCloseCommand(BaseModel):
-    """The response shape *offered* to the model. Deliberately narrower.
-
-    The schema is not documentation: it is sent as ``response_format`` or as a
-    tool signature, so the runtime constrains decoding with it. That makes it
-    the strongest statement of what the model may answer — stronger than any
-    prose — and it was contradicting the prose.
-
-    The technical block says the only permitted answers are O, C and no_action,
-    while the schema offered fourteen gesture letters, six actuators and an
-    integer position per actuator. A model reading both was handed two
-    contracts and allowed to pick, and the wider one was the enforced one. A
-    reply of ``A320,B240`` was then rejected by the validator — recorded as the
-    model's error, when the platform had put the vocabulary in front of it.
-
-    What is *parsed* stays wide: :class:`ProstheticCommand` still accepts the
-    full shape, because executions recorded under the fourteen-gesture contract
-    have to keep parsing and re-judging. Narrowing what is asked for does not
-    narrow what can be read back.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     intent: Literal["gesture", "no_action"]

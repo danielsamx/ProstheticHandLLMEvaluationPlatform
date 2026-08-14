@@ -47,6 +47,96 @@ def _load_resolver(extra: set[str] | None = None):
 SCHEMA = {"type": "object", "properties": {"hand": {"type": "string"}}}
 
 
+# ── The tool instruction and the multimodal turn ────────────────────────────
+
+
+def _tool_shaper():
+    return _load_resolver({"_with_tool_instruction", "TOOL_INSTRUCTION"})
+
+
+def test_the_tool_instruction_survives_a_multimodal_user_turn():
+    """The regression that took down every tool-calling run.
+
+    The branch was written when the user turn was always a string, and it went
+    on concatenating one onto it after the image flow made the turn a list of
+    typed parts:
+
+        TypeError: can only concatenate list (not "str") to list
+
+    raised inside the request, after the picture had been rendered. The
+    instruction must arrive as its own part *after* the image, so the last thing
+    the model reads is still how it has to answer — and the image must still be
+    there, which is the half the exception hid.
+    """
+    module = _tool_shaper()
+    messages = [
+        {"role": "system", "content": "frozen blocks"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "DERIVED FEATURES"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+    ]
+
+    parts = module._with_tool_instruction(messages)[-1]["content"]
+
+    assert [part["type"] for part in parts] == ["text", "image_url", "text"]
+    assert parts[-1]["text"] == module.TOOL_INSTRUCTION
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    # The originals are untouched: the frozen prompt is what the record stores,
+    # and an invocation detail must not edit it in place.
+    assert len(messages[-1]["content"]) == 2
+
+
+def test_a_text_only_turn_still_gets_the_instruction_appended():
+    module = _tool_shaper()
+    shaped = module._with_tool_instruction([{"role": "user", "content": "table"}])
+    assert shaped[0]["content"] == "table" + module.TOOL_INSTRUCTION
+
+
+# ── What the model is allowed to answer ─────────────────────────────────────
+
+
+def test_the_offered_schema_permits_only_open_close_and_no_action():
+    """The schema is enforced, so it is the strongest statement of the contract.
+
+    It used to offer fourteen gesture letters, six actuators and an integer
+    position each, while the technical block said the only permitted answers
+    were O, C and no_action. The model was handed two contracts and the wider
+    one was the one the runtime enforced.
+    """
+    from app.schemas.llm_output import response_json_schema
+
+    schema = response_json_schema()
+    properties = schema["properties"]
+
+    assert properties["intent"]["enum"] == ["gesture", "no_action"]
+    assert properties["gesture"]["anyOf"][0]["enum"] == ["O", "C"]
+    for absent in ("commands", "safety", "hand"):
+        assert absent not in properties
+    assert "$defs" not in schema
+
+
+def test_the_offered_schema_carries_no_prose():
+    """Pydantic copies a class docstring into `description`, and it would travel
+    to the model on every request. The tool path strips descriptions; the
+    `response_format` path does not, so the schema has to be clean at source."""
+    import json
+
+    from app.schemas.llm_output import response_json_schema
+
+    assert "description" not in json.dumps(response_json_schema())
+
+
+def test_the_full_contract_still_renders_for_the_stored_records():
+    """Executions run under the fourteen-gesture contract are still in the
+    database, and reading one back must not depend on a schema that only exists
+    in git history."""
+    from app.schemas.llm_output import full_response_json_schema
+
+    assert "$defs" in full_response_json_schema()
+
+
 def test_lm_studio_gets_json_schema_not_json_object():
     """The exact rejection this guards against, reproduced as a rule."""
     resolver = _load_resolver()
