@@ -109,6 +109,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
         is only a measurement when both are decided.
       -->
       <div class="flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+        @if (false) {
         <div style="display: flex; flex-direction: column;">
           <label class="lab-label">Dynamic prompt</label>
           <mat-button-toggle-group class="dense-toggle-group"
@@ -137,13 +138,19 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
           </mat-button-toggle-group>
         </div>
 
+        }
+        <div class="flex flex-col gap-1">
+          <label class="lab-label">Model input</label>
+          <span class="lab-chip bg-navy text-white">Semantic sEMG + encoder state</span>
+        </div>
+
         <div class="min-w-[170px] flex-1">
           <label class="lab-label"
                  matTooltip="The command this window should produce. Stored with the run and compared against the model's answer. It is never placed in the prompt.">
-            Expected serial command
+            Evaluation ground truth
           </label>
           <mat-form-field appearance="outline" class="dense-field w-full">
-            <input matInput placeholder="e.g. C  or  A320,B180"
+            <input matInput placeholder="Optional expected command (never sent to model)"
                    class="lab-mono"
                    [ngModel]="store.expectedCommand()"
                    (ngModelChange)="store.expectedCommand.set($event)" />
@@ -155,7 +162,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
           the window is long enough for the choice to matter. Showing it always
           would put a knob on screen that most runs never need to touch.
         -->
-        @if (store.dynamicContent() !== 'features'
+        @if ((store.dynamicContent() === 'matrix' || store.dynamicContent() === 'both')
             && (store.sampleCount() > 64 || store.matrixMaxRows() !== null)) {
           <div>
             <label class="lab-label"
@@ -209,7 +216,9 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
           <mat-icon class="!h-3.5 !w-3.5 !text-[13px]">
             {{ preview.dynamic_content === 'features' ? 'functions' : 'table_rows' }}
           </mat-icon>
-          @if (preview.dynamic_content === 'features') {
+          @if (preview.dynamic_content === 'semantic') {
+            The prompt carries semantic sEMG and encoder state; raw rows are not sent.
+          } @else if (preview.dynamic_content === 'features') {
             The prompt carries the derived descriptors only — no matrix rows.
           } @else if (preview.matrix_rows_sent >= store.sampleCount()) {
             The prompt carries all {{ store.sampleCount() }} rows.
@@ -313,7 +322,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
       }
 
       <!-- ── Derived features (read-only) ──────────────────────────────── -->
-      <div class="overflow-hidden rounded-lg border border-ink-200">
+      <div class="hidden overflow-hidden rounded-lg border border-ink-200">
         <table class="w-full text-[11px]">
           <thead class="bg-ink-100 text-ink-600">
             <tr>
@@ -358,7 +367,7 @@ import { EmgMatrixPlot } from './emg-matrix-plot';
       </div>
 
       <!-- ── Aggregate interpretation ──────────────────────────────────── -->
-      <div class="flex flex-wrap items-center justify-between gap-2 border-t border-ink-200 pt-2 text-[11px]">
+      <div class="hidden flex-wrap items-center justify-between gap-2 border-t border-ink-200 pt-2 text-[11px]">
         <div class="flex items-center gap-3 text-ink-600">
           <span>mean RMS <span class="lab-mono font-semibold text-navy">{{ num(store.meanRms()) }}</span></span>
           <span>flexor <span class="lab-mono text-pink">{{ num(store.flexorActivation()) }}</span></span>
@@ -481,7 +490,7 @@ export class EmgPanel {
                hint: 'Dorsal group leads. Expect an opening gesture.' };
     }
     return { label: 'co-contraction', tone: 'bg-amber text-navy',
-             hint: 'Both groups active at similar levels — usually a deliberate stop.' };
+             hint: 'Both groups are active at similar levels. This may be physiological coactivation during a grasp and requires a calibrated reference.' };
   }
 
   protected autoRun = true;

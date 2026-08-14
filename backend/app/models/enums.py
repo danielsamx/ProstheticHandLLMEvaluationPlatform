@@ -8,7 +8,8 @@ from enum import Enum
 class UserRole(str, Enum):
     ADMIN = "admin"
     RESEARCHER = "researcher"
-    VIEWER = "viewer"
+    INTERN = "intern"
+    OTHER = "other"
 
 
 class ExecutionStatus(str, Enum):

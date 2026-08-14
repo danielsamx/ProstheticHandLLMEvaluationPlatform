@@ -45,6 +45,7 @@ from app.prompts.emg_context import build_emg_context
 from app.prompts.system_prompt import default_system_prompt
 from app.prompts.technical_context import build_technical_context
 from app.schemas.emg import EmgWindow
+from app.schemas.multimodal import MechanicalTelemetry
 
 #: Separator between blocks.
 #:
@@ -128,6 +129,8 @@ def build_prompt(
     subject_ref: str | None = None,
     subject_notes: str | None = None,
     extra_parameters: dict[str, Any] | None = None,
+    mechanical_telemetry: MechanicalTelemetry | None = None,
+    mvc_by_channel: list[float] | None = None,
     merge_context_into_system: bool = True,
 ) -> AssembledPrompt:
     """Assemble the final prompt.
@@ -145,13 +148,42 @@ def build_prompt(
     """
     profile = limit_profile or get_limit_profile()
 
-    system_text = system_prompt if system_prompt is not None else default_system_prompt()
+    # Semantic mode is the production path for the current project. Historical
+    # prompt rows remain in the database for reproducibility, but must not leak
+    # into a new semantic execution selected by the current interface.
+    semantic_mode = DynamicContent(dynamic_content) is DynamicContent.SEMANTIC
+
+    semantic_system_compatible = bool(
+        system_prompt
+        and "semantic" in system_prompt.lower()
+        and "execute_handi_command" in system_prompt
+    )
+    semantic_context_compatible = bool(
+        technical_context and "Encoder policy" in technical_context
+    )
+    semantic_emg_compatible = bool(
+        emg_context
+        and "semantic" in emg_context.lower()
+        and not any(token in emg_context for token in ("- RMS", "- MAV", "- ZC", "- SSC", "- WL"))
+    )
+
+    system_text = (
+        system_prompt if semantic_mode and semantic_system_compatible
+        else default_system_prompt() if semantic_mode
+        else system_prompt if system_prompt is not None else default_system_prompt()
+    )
     context_text = (
-        technical_context
+        technical_context if semantic_mode and semantic_context_compatible
+        else build_technical_context(profile) if semantic_mode
+        else technical_context
         if technical_context is not None
         else build_technical_context(profile)
     )
-    emg_text = emg_context if emg_context is not None else build_emg_context()
+    emg_text = (
+        emg_context if semantic_mode and semantic_emg_compatible
+        else build_emg_context() if semantic_mode
+        else emg_context if emg_context is not None else build_emg_context()
+    )
     dynamic_text = render_dynamic_prompt(
         window,
         content=dynamic_content,
@@ -161,6 +193,8 @@ def build_prompt(
         subject_ref=subject_ref,
         subject_notes=subject_notes,
         extra_parameters=extra_parameters,
+        mechanical_telemetry=mechanical_telemetry,
+        mvc_by_channel=mvc_by_channel,
         template=dynamic_template,
     )
 

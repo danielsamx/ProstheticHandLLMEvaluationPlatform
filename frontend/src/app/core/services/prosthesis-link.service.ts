@@ -1,6 +1,7 @@
 import { Injectable, computed, signal } from '@angular/core';
 
 import { MovementFrame } from '../models/hand.model';
+import { EncoderTelemetry, MechanicalTelemetry } from '../api/api.service';
 
 export type LinkState = 'unsupported' | 'disconnected' | 'connecting' | 'connected' | 'error';
 export type LinkTransport = 'serial' | 'ble';
@@ -61,6 +62,7 @@ export class ProsthesisLinkService {
   readonly error = signal<string | null>(null);
   readonly sentCount = signal(0);
   readonly recent = signal<LinkEvent[]>([]);
+  readonly encoderTelemetry = signal<MechanicalTelemetry | null>(null);
 
   /**
    * True when a command would reach hardware.
@@ -73,6 +75,7 @@ export class ProsthesisLinkService {
 
   private port: SerialPort | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private bleCharacteristic: BluetoothRemoteGATTCharacteristic | null = null;
   private lastSentAt = 0;
 
@@ -132,6 +135,10 @@ export class ProsthesisLinkService {
 
     this.port = port;
     this.writer = port.writable!.getWriter();
+    if (port.readable) {
+      this.reader = port.readable.getReader();
+      void this.readSerialTelemetry();
+    }
 
     const info = port.getInfo?.();
     this.deviceName.set(
@@ -225,14 +232,60 @@ export class ProsthesisLinkService {
     await this.send({ serial_command: 'O' } as MovementFrame);
   }
 
+  /** Read newline-delimited encoder feedback from compatible firmware. */
+  private async readSerialTelemetry(): Promise<void> {
+    const decoder = new TextDecoder();
+    let pending = '';
+    try {
+      while (this.reader) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop() ?? '';
+        for (const line of lines) this.acceptTelemetryLine(line.trim());
+      }
+    } catch (err) {
+      if (this.state() === 'connected') this.handleDrop(this.describe(err));
+    }
+  }
+
+  /** Accept JSON `{actuators:[...]}` or `ENC,name,pos,min,max,velocity`. */
+  private acceptTelemetryLine(line: string): void {
+    if (!line) return;
+    const now = new Date().toISOString();
+    let incoming: EncoderTelemetry[] = [];
+    try {
+      if (line.startsWith('{')) {
+        const decoded = JSON.parse(line) as { actuators?: EncoderTelemetry[] };
+        incoming = Array.isArray(decoded.actuators) ? decoded.actuators : [];
+      } else if (line.startsWith('ENC,')) {
+        const [, actuator, position, minimum, maximum, velocity = '0'] = line.split(',');
+        incoming = [{ actuator, position: Number(position), minimum: Number(minimum),
+          maximum: Number(maximum), velocity: Number(velocity), captured_at: now }];
+      }
+    } catch { return; }
+    incoming = incoming.filter((item) => item.actuator &&
+      [item.position, item.minimum, item.maximum, item.velocity].every(Number.isFinite) &&
+      item.maximum > item.minimum).map((item) => ({ ...item, captured_at: item.captured_at || now }));
+    if (!incoming.length) return;
+    const merged = new Map((this.encoderTelemetry()?.actuators ?? []).map((item) => [item.actuator, item]));
+    incoming.forEach((item) => merged.set(item.actuator, item));
+    this.encoderTelemetry.set({ actuators: [...merged.values()], received_at: now,
+      stale_after_ms: 500, stall_velocity_threshold: 0.01 });
+  }
+
   private async cleanup(): Promise<void> {
     try {
+      await this.reader?.cancel();
+      this.reader?.releaseLock();
       this.writer?.releaseLock();
       await this.port?.close();
     } catch {
       // Already gone. Nothing to report: the goal was for it to be closed.
     }
     this.writer = null;
+    this.reader = null;
     this.port = null;
     this.bleCharacteristic = null;
   }

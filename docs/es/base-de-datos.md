@@ -374,6 +374,7 @@ ORDER BY created_at DESC;
 | `0006_emg_context_block` | `emg_context_versions` y el cuarto bloque en las ejecuciones |
 | `0007_prompt_configurations` | `prompt_configurations`, deduplicada sobre el digest congelado |
 | `0008_reasoning_and_movement_log` | `sampling_configurations.disable_reasoning`, `movement_log` |
+| `0009_auth_myo_feedback` | Cuentas con cuatro roles, autenticación y retroalimentación auditable de gestos |
 
 `0002` elimina las ventanas y ejecuciones existentes. Un vector de
 características no determina la forma de onda de la que salió, así que rellenar

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import Permission, require_permission
 from app.db.session import get_session
-from app.models.audit import AuditAction, AuditOutcome
+from app.models.audit import AuditAction
 from app.models.experiment import Execution, Experiment
 from app.models.project import Project, ProjectStatus
 from app.schemas.governance import (
@@ -73,7 +74,8 @@ async def list_projects(
     return list((await session.execute(stmt)).scalars().all())
 
 
-@router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission(Permission.MANAGE_PROJECTS))])
 async def create_project(payload: ProjectIn, session: AsyncSession = Depends(get_session)):
     slug = await _unique_slug(session, payload.slug or slugify(payload.name))
     project = Project(
@@ -103,7 +105,8 @@ async def get_project(project_id: uuid.UUID, session: AsyncSession = Depends(get
     return await _get_or_404(session, project_id)
 
 
-@router.patch("/{project_id}", response_model=ProjectOut)
+@router.patch("/{project_id}", response_model=ProjectOut,
+              dependencies=[Depends(require_permission(Permission.MANAGE_PROJECTS))])
 async def update_project(
     project_id: uuid.UUID,
     payload: ProjectUpdate,
@@ -115,7 +118,7 @@ async def update_project(
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(project, field, value)
     if payload.status == ProjectStatus.ARCHIVED and project.archived_at is None:
-        project.archived_at = datetime.now(timezone.utc)
+        project.archived_at = datetime.now(UTC)
     await session.flush()
 
     after = audit_service.snapshot(project, AUDITED_FIELDS)
@@ -133,7 +136,8 @@ async def update_project(
     return project
 
 
-@router.delete("/{project_id}", response_model=ProjectOut)
+@router.delete("/{project_id}", response_model=ProjectOut,
+               dependencies=[Depends(require_permission(Permission.MANAGE_PROJECTS))])
 async def delete_project(project_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     """Soft delete.
 
@@ -144,7 +148,7 @@ async def delete_project(project_id: uuid.UUID, session: AsyncSession = Depends(
     """
     project = await _get_or_404(session, project_id)
     project.is_deleted = True
-    project.deleted_at = datetime.now(timezone.utc)
+    project.deleted_at = datetime.now(UTC)
     await session.flush()
 
     await audit_service.record(
@@ -157,7 +161,8 @@ async def delete_project(project_id: uuid.UUID, session: AsyncSession = Depends(
     return project
 
 
-@router.post("/{project_id}/restore", response_model=ProjectOut)
+@router.post("/{project_id}/restore", response_model=ProjectOut,
+             dependencies=[Depends(require_permission(Permission.MANAGE_PROJECTS))])
 async def restore_project(project_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     project = await session.get(Project, project_id)
     if project is None:

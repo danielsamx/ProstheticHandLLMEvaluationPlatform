@@ -4,21 +4,27 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     configurations,
+    auth,
     emg,
     executions,
     experiments,
+    feedback,
     governance,
     hand,
     movement,
+    myo,
     projects,
     prompts,
     providers,
 )
 
 api_router = APIRouter()
+api_router.include_router(auth.router)
+api_router.include_router(feedback.router)
 
 # Reference data
 api_router.include_router(hand.router)
+api_router.include_router(myo.router)
 api_router.include_router(movement.router)
 api_router.include_router(providers.router)
 

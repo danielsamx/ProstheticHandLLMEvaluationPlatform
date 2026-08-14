@@ -40,8 +40,8 @@ from app.domain.hand_spec import EMG_CHANNEL_SITES
 #: From here the version means what a researcher expects it to mean: 1.0 is the
 #: text this platform ships with, and anything above it is a change someone
 #: made deliberately and can be asked about.
-EMG_CONTEXT_VERSION: Final[str] = "1.1"
-EMG_CONTEXT_NAME: Final[str] = "Myo Armband 8-channel EMG - interpretation"
+EMG_CONTEXT_VERSION: Final[str] = "2.0"
+EMG_CONTEXT_NAME: Final[str] = "Semantic sEMG decision policy"
 
 
 def _channel_table() -> str:
@@ -60,33 +60,16 @@ def _channel_table() -> str:
 
 def build_emg_context() -> str:
     """Render the EMG knowledge block."""
-    return f"""\
-EMG KNOWLEDGE CONTEXT
-Surface EMG is acquired from an eight-channel Myo Armband.
-Channels
-{_channel_table()}
-Interpret the complete activation pattern.
-Do not classify movements from a single threshold.
-Evaluate jointly
-- raw EMG
-- RMS
-- MAV
-- WL
-- ZC
-- SSC
-- spatial distribution
-- relative activation
-Normal grasping may activate both flexors and extensors because of physiological coactivation.
-Simultaneous agonist and antagonist activity alone does not indicate STOP.
-Infer the movement whose overall pattern is most consistent with the observed EMG.
-If evidence is insufficient return no_action.
-When intent is no_action, leave serial_command empty and send no gesture.
-no_action means the hand does not move. It is never S, and never O.
-Return STOP only when ALL of the following are true:
-1. Flexor and extensor activation are both high.
-2. Their activation is approximately balanced across most channels.
-3. No grasp, pinch, point, thumbs-up, call-me, OK or other supported gesture better explains the pattern.
-4. The overall EMG is more consistent with intentional simultaneous contraction than with any hand movement.
+    return """\
+SEMANTIC sEMG POLICY
+The numerical signal has already been windowed, normalized, and serialized deterministically.
+Do not request or reconstruct raw samples, RMS, MAV, ZC, SSC, or WL.
+Use intent_candidate, confidence, stable_for_ms, activation levels, and trends as biological evidence.
+Use detected_pattern_hint only when it is not unknown.
+control_recommendation=no_action requires no_action and an empty serial command.
+Co-contraction is represented as detected_pattern=co_contraction and does not mean hold.
+Infer a supported gesture only when control_recommendation=infer_gesture and action_allowed=true.
+Encoder evidence can veto biological intent but cannot invent a biological gesture.
 """
 
 

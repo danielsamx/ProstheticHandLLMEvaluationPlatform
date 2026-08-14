@@ -18,6 +18,10 @@ import { Routes } from '@angular/router';
  * under experiments that never happened.
  */
 export const routes: Routes = [
+  { path: 'login', title: 'Access · Prosthetic Hand Lab', loadComponent: () => import('@features/auth/login-view').then(m => m.LoginView) },
+  { path: 'users', title: 'Users · Prosthetic Hand Lab', loadComponent: () => import('@features/auth/users-view').then(m => m.UsersView) },
+  { path: 'myo', title: 'Myo · Prosthetic Hand Lab', loadComponent: () => import('@features/myo/myo-view').then(m => m.MyoView) },
+  { path: 'dataset', title: 'Dataset · Prosthetic Hand Lab', loadComponent: () => import('@features/dataset/dataset-view').then(m => m.DatasetView) },
   {
     path: 'lab',
     title: 'Laboratory · Prosthetic Hand LLM Evaluation',

@@ -4,7 +4,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { environment } from '@env/environment';
 
-import { ApiService, RunExecutionPayload } from '../api/api.service';
+import { ApiService, MechanicalTelemetry, RunExecutionPayload } from '../api/api.service';
 import {
   EMG_CHANNEL_COUNT,
   EmgChannelFeatures,
@@ -26,9 +26,14 @@ import {
   SamplingConfiguration,
 } from '../models/llm.model';
 import { SimulatorBridgeService } from './simulator-bridge.service';
+import { ProsthesisLinkService } from './prosthesis-link.service';
 
 const CHANNEL_LABELS = Array.from({ length: EMG_CHANNEL_COUNT }, (_, i) => `CH${i + 1}`);
 const DEFAULT_ROWS = 200;
+const SEMANTIC_DYNAMIC_TEMPLATE = `MULTIMODAL SEMANTIC STATE
+{semantic_block}
+Follow control_recommendation and use only supported tool arguments.
+Ground truth is never included. Never use hold as an output label.`;
 
 function blankMatrix(rows = DEFAULT_ROWS): number[][] {
   return Array.from({ length: rows }, () => new Array<number>(EMG_CHANNEL_COUNT).fill(0));
@@ -45,6 +50,7 @@ function blankMatrix(rows = DEFAULT_ROWS): number[][] {
 export class LabStore {
   private readonly api = inject(ApiService);
   private readonly bridge = inject(SimulatorBridgeService);
+  private readonly prosthesis = inject(ProsthesisLinkService);
 
   // ── Reference data ────────────────────────────────────────────────────────
   readonly handSpec = signal<HandSpec | null>(null);
@@ -55,6 +61,11 @@ export class LabStore {
   readonly technicalContexts = signal<PromptVersion[]>([]);
   readonly emgContexts = signal<PromptVersion[]>([]);
   readonly dynamicTemplates = signal<PromptVersion[]>([]);
+  readonly visibleDynamicTemplates = computed(() =>
+    this.dynamicContent() === 'semantic'
+      ? this.dynamicTemplates().filter((item) => item.content.includes('{semantic_block}'))
+      : this.dynamicTemplates(),
+  );
   readonly lmStudio = signal<LmStudioProbe | null>(null);
 
   // ── Current selection ─────────────────────────────────────────────────────
@@ -85,7 +96,7 @@ export class LabStore {
    * questions, and the second is much the easier one because the signal
    * processing has already been done for it.
    */
-  readonly dynamicContent = signal<DynamicContent>('matrix');
+  readonly dynamicContent = signal<DynamicContent>('semantic');
 
   /**
    * Cap on the matrix rows sent; null means the whole window.
@@ -114,6 +125,7 @@ export class LabStore {
   readonly frequencyPenalty = signal(0);
   readonly presencePenalty = signal(0);
   readonly responseFormat = signal<'text' | 'json_object' | 'json_schema'>('json_object');
+  readonly invocationMode = signal<'structured_output' | 'tool_calling'>('tool_calling');
 
   /**
    * Suppress the model's thinking channel. On by default.
@@ -329,7 +341,7 @@ export class LabStore {
       this.error.set(
         `Cannot reach the backend at ${environment.apiBase}. ` +
         'Check that the API container is running (docker compose ps) and that ' +
-        'nothing else holds port 8000.',
+        'nothing else holds the published port 8081.',
       );
       return;
     }
@@ -402,8 +414,14 @@ export class LabStore {
     }
     const activeTemplate = templates.find((p) => p.is_active) ?? templates[0];
     if (activeTemplate) {
-      this.selectedTemplateId.set(activeTemplate.id);
-      this.dynamicTemplateDraft.set(activeTemplate.content);
+      if (this.dynamicContent() === 'semantic') {
+        const semanticTemplate = templates.find((item) => item.content.includes('{semantic_block}'));
+        this.selectedTemplateId.set(semanticTemplate?.id ?? null);
+        this.dynamicTemplateDraft.set(semanticTemplate?.content ?? SEMANTIC_DYNAMIC_TEMPLATE);
+      } else {
+        this.selectedTemplateId.set(activeTemplate.id);
+        this.dynamicTemplateDraft.set(activeTemplate.content);
+      }
     }
 
     const firstConfig = configs[0];
@@ -750,6 +768,7 @@ export class LabStore {
     try {
       const preview = await firstValueFrom(this.api.previewPrompt({
         window: toWindowPayload(this.currentWindow()),
+        mechanical_telemetry: this.currentMechanicalTelemetry(),
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
@@ -791,7 +810,9 @@ export class LabStore {
 
   dirtyTemplate(): boolean {
     const active = this.dynamicTemplates().find((p) => p.id === this.selectedTemplateId());
-    return !!active && active.content !== this.dynamicTemplateDraft();
+    return this.dynamicContent() === 'semantic'
+      ? !active || active.content !== this.dynamicTemplateDraft()
+      : !!active && active.content !== this.dynamicTemplateDraft();
   }
 
   async saveTemplateVersion(name: string, version: string): Promise<void> {
@@ -854,7 +875,9 @@ export class LabStore {
 
       const payload: RunExecutionPayload = {
         sampling_configuration_id: this.selectedConfigurationId()!,
+        invocation_mode: this.invocationMode(),
         window: toWindowPayload(this.currentWindow()),
+        mechanical_telemetry: this.currentMechanicalTelemetry(),
         handedness: this.handedness(),
         system_prompt_version_id: this.selectedSystemPromptId(),
         technical_context_version_id: this.selectedContextId(),
@@ -897,6 +920,31 @@ export class LabStore {
     } catch {
       /* history is best-effort */
     }
+  }
+
+  /** Physical encoders win; otherwise the last validated simulator pose is feedback. */
+  currentMechanicalTelemetry(): MechanicalTelemetry | null {
+    const physical = this.prosthesis.encoderTelemetry();
+    if (physical?.actuators.length) return physical;
+    const frame = this.bridge.lastMovement();
+    const spec = this.handSpec();
+    const profile = spec?.limit_profiles.find((item) => item.id === this.limitProfile());
+    if (!spec || !profile) return null;
+    const telemetryAt = Date.now();
+    return {
+      actuators: spec.actuators.map((actuator) => {
+        const [minimum, maximum] = profile.limits[actuator.letter];
+        return {
+          actuator: actuator.letter,
+          position: frame?.actuator_positions[actuator.letter] ?? minimum,
+          minimum, maximum, velocity: 0,
+          captured_at: new Date(telemetryAt).toISOString(),
+        };
+      }),
+      received_at: new Date(telemetryAt).toISOString(),
+      stale_after_ms: 10_000,
+      stall_velocity_threshold: 0,
+    };
   }
 
   async replay(execution: Execution): Promise<void> {

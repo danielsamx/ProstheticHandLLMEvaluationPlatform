@@ -16,6 +16,7 @@ dist/
 
 # Env
 .env
+.docker-codex/
 .env.local
 
 # OS
