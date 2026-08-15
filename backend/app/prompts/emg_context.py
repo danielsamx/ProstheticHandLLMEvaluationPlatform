@@ -65,10 +65,10 @@ Deciding
 Compare the two groups rather than reading any channel on its own.
 Absolute amplitude depends on gain, electrode placement and the subject, so it does not transfer between recordings. The balance between groups does.
 Normal movement activates both groups because antagonists stabilise the wrist. Simultaneous activity alone does not mean the hand should stay still.
-Choose CLOSE when the flexor group clearly dominates and the image shows a sustained rise in the upper panels.
-Choose OPEN when the extensor group clearly dominates and the image shows a sustained rise in the lower panels.
-Choose no_action when both groups stay near their baseline, when neither clearly dominates, or when the image and the descriptors disagree.
-When intent is no_action, leave serial_command empty. Never substitute another command for inaction.
+Choose C to close when the flexor group clearly dominates and the image shows a sustained rise in the upper panels.
+Choose O to open when the extensor group clearly dominates and the image shows a sustained rise in the lower panels.
+Choose "" when both groups stay near their baseline, when neither clearly dominates, or when the image and the descriptors disagree.
+Never substitute a movement for inaction.
 """
 
 

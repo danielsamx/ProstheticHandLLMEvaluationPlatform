@@ -81,7 +81,58 @@ def check(raw: str, *, hand: Handedness = Handedness.RIGHT, profile=None):
     return validate_response(raw, expected_hand=hand, limit_profile=profile)
 
 
-# ── Happy path ──────────────────────────────────────────────────────────────
+# ── The current contract: one field ─────────────────────────────────────────
+
+
+def test_a_bare_gesture_reply_passes_every_stage():
+    """`{"gesture": "C"}` is the whole contract now.
+
+    The pipeline below it is unchanged — protocol, range, kinematics, safety all
+    run exactly as before — because the reply is expanded into the wide shape
+    before stage 2. What no longer exists is the possibility of a reply that
+    disagrees with itself.
+    """
+    report = check('{"gesture": "C"}')
+    assert report.passed, [i.message for i in report.errors]
+    assert report.stages_completed == ALL_STAGES
+    assert report.normalised_serial == "C"
+    assert report.resolved_pose is not None
+
+    # Derived, not claimed: the model said one letter.
+    assert report.parsed_command.intent == "gesture"
+    assert report.parsed_command.serial_command == "C"
+    assert report.parsed_command.confidence is None
+
+
+def test_an_empty_gesture_is_a_refusal_and_transmits_nothing():
+    report = check('{"gesture": ""}')
+    assert report.passed, [i.message for i in report.errors]
+    assert report.parsed_command.is_inaction
+    assert report.normalised_serial is None
+    assert report.resolved_pose is None
+    assert report.stages_completed == ALL_STAGES
+
+
+@pytest.mark.parametrize("payload", [
+    '{"gesture": "P"}',            # a real firmware gesture, not permitted here
+    '{"gesture": "o"}',            # lower case
+    '{"gesture": "O", "confidence": 0.9}',   # a field the contract does not have
+    '{"gesture": null}',
+])
+def test_anything_but_the_three_values_is_a_schema_violation(payload):
+    """Not repaired, not coerced.
+
+    `P` is the sharpest case: it is a gesture the firmware really implements, so
+    every stage below would accept it and the hand would perform a pinch. The
+    contract says three answers, and the schema is where that is enforced.
+    """
+    report = check(payload)
+    assert not report.passed
+    assert report.failed_stage is ValidationStage.SCHEMA
+    assert report.normalised_serial is None
+
+
+# ── The older contract, for the records written under it ────────────────────
 
 
 def test_a_gesture_passes_every_stage():

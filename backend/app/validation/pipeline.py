@@ -43,6 +43,7 @@ from app.domain.kinematics import HandPose, pose_from_gesture, pose_from_positio
 from app.domain.protocol import ProtocolError, SerialFrame, parse_serial_command
 from app.schemas.llm_output import (
     DETECTED_PATTERNS,
+    GestureResponse,
     ProstheticCommand,
     derive_pattern,
 )
@@ -168,8 +169,25 @@ def validate_response(
     report.stages_completed.append(ValidationStage.PARSE)
 
     # ── Stage 2: schema ─────────────────────────────────────────────────────
+    #
+    # Two shapes are accepted, chosen by the payload rather than by a setting.
+    #
+    # The current contract is `{"gesture": "O"|"C"|""}` and nothing else. The
+    # wide shape — intent, serial_command, commands[], confidence, safety — is
+    # what executions recorded under the earlier contracts hold, and re-judging
+    # one of those must still work: a stored result that can no longer be
+    # re-validated is a result that cannot be defended later.
+    #
+    # The discriminator is `intent`. It is required in the wide shape and absent
+    # from the narrow one, so its presence identifies the record's era without a
+    # version field that would have to be right.
+    minimal = "intent" not in payload
     try:
-        command = ProstheticCommand.model_validate(payload)
+        command = (
+            GestureResponse.model_validate(payload).as_prosthetic_command()
+            if minimal
+            else ProstheticCommand.model_validate(payload)
+        )
     except ValidationError as exc:
         for error in exc.errors():
             path = ".".join(str(part) for part in error["loc"])
@@ -415,11 +433,11 @@ def _check_consistency(
         ))
 
     # ── the model's stated confidence vs. its own refusal ───────────────────
-    # The system prompt asks for no_action to come with low confidence. High
-    # confidence on a refusal is not dangerous, but it is a sign the model is
-    # not using the scale as instructed, which matters when confidence is being
-    # analysed as a variable.
-    if command.intent == "no_action" and command.confidence > 0.8:
+    # Only reachable for a stored response from an older contract: the current
+    # one has no confidence field, so `confidence` is None and this is skipped.
+    # Kept because re-judging those records must produce the same verdict they
+    # got at the time.
+    if command.intent == "no_action" and (command.confidence or 0.0) > 0.8:
         report.add(ValidationIssue(
             ValidationStage.CONSISTENCY, "CONFIDENT_REFUSAL",
             f"intent='no_action' reported with confidence {command.confidence:.2f}; "

@@ -145,7 +145,15 @@ class ProstheticCommand(BaseModel):
     #: "hold position" command in the protocol, so the honest representation of
     #: inaction is the absence of a command, not the presence of a harmless one.
     serial_command: str = ""
-    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+
+    #: ``None``, not 0.0, when the response did not carry one.
+    #:
+    #: The current contract has no confidence field, so every command derived
+    #: from a `GestureResponse` has nothing to put here. Defaulting to 0.0 would
+    #: write a self-report of "completely unsure" into the metrics for every run,
+    #: and a mean confidence of zero across a study is a fabricated finding.
+    #: ``None`` means "not stated", which is what happened.
+    confidence: Annotated[float | None, Field(ge=0.0, le=1.0)] = None
     safety: SafetyAssertion | None = None
 
     #: Enumerated in the system prompt but absent from the response shape stated
@@ -180,23 +188,13 @@ def derive_pattern(gesture: ControlCommand | None) -> str:
 def output_contract() -> str:
     """The response shape as it is offered to the model.
 
-    Rendered from :class:`OpenCloseCommand`, not from the full one, so this
+    Rendered from :class:`GestureResponse`, not from the full one, so this
     endpoint cannot describe a shape the runtime no longer permits — the exact
     disagreement that let a model answer with actuator positions and then be
     marked wrong for it.
     """
-    gestures = "|".join(f'"{letter}"' for letter in _OPEN_CLOSE_LETTERS)
-    return (
-        "OUTPUT\n"
-        "Valid JSON only. No prose.\n"
-        "{\n"
-        '  "intent":"gesture"|"no_action",\n'
-        f'  "gesture":{gestures}|null,\n'
-        '  "serial_command":string,\n'
-        '  "confidence":float,\n'
-        '  "detected_pattern":string|null\n'
-        "}"
-    )
+    values = "|".join(f'"{letter}"' for letter in (*_OPEN_CLOSE_LETTERS, NO_ACTION_LETTER))
+    return "OUTPUT\nValid JSON only. No prose.\n{\n" f'  "gesture":{values}\n' "}"
 
 
 #: The two letters this flow permits, read from the domain rather than typed.
@@ -207,43 +205,67 @@ _OPEN_CLOSE_LETTERS: tuple[str, ...] = tuple(
 )
 
 
-# The response shape *offered* to the model, deliberately narrower than the one
-# that can be parsed.
+#: The empty string: open, close, or neither.
+#:
+#: Inaction is a value of the same field rather than a separate flag, because a
+#: flag can disagree with the letter beside it. `{"intent": "no_action",
+#: "serial_command": "C"}` was a real response, and it was a contradiction the
+#: platform then had to detect, report and discard. With one field there is
+#: nothing to contradict: the answer either names a movement or it does not.
+NO_ACTION_LETTER: str = ""
+
+# The response shape *offered* to the model: one field, three values.
 #
-# The schema is not documentation: it is sent as `response_format` or as a tool
-# signature, so the runtime constrains decoding with it. That makes it the
-# strongest statement of what the model may answer — stronger than any prose —
-# and it was contradicting the prose. The technical block says the only
-# permitted answers are O, C and no_action, while the schema offered fourteen
-# gesture letters, six actuators and an integer position each. A model reading
-# both was handed two contracts and allowed to pick, and the wider one was the
-# enforced one. A reply of `A320,B240` was then rejected by the validator and
-# recorded as the model's error, when the platform had put the vocabulary in
-# front of it.
+# The schema is not documentation. It is sent as `response_format` or as a tool
+# signature, so the runtime constrains decoding with it — which makes it the
+# strongest statement of what the model may answer, stronger than any prose.
+#
+# It has been narrowed twice. First from the fourteen-gesture contract, which
+# offered six actuators and an integer position each while the technical block
+# said the only permitted answers were O, C and no_action: the model was handed
+# two contracts and the wider one was the enforced one. Then from four fields to
+# one, because `intent`, `serial_command` and `confidence` were four ways of
+# saying a thing that fits in a single letter, and every extra field was another
+# place for the answer to disagree with itself.
+#
+# What that costs is real and should be stated: `confidence` is gone, so
+# calibration — how well a model's stated certainty tracks its correctness —
+# can no longer be measured, and the consistency stage now has nothing to check.
+# The trade is deliberate: a self-report that the model was free to invent was
+# being recorded as a measurement, and its main observed use was contradicting
+# the command it accompanied.
 #
 # What is *parsed* stays wide: `ProstheticCommand` still accepts the full shape,
-# because executions recorded under the fourteen-gesture contract have to keep
-# parsing and re-judging. Narrowing what is asked for does not narrow what can
-# be read back.
+# because executions recorded under the older contracts have to keep parsing and
+# re-judging. Narrowing what is asked for does not narrow what can be read back.
 #
 # The rationale is a comment rather than a docstring on purpose: Pydantic copies
 # a class docstring into the schema's `description`, and this one would travel
 # to the model on every request as a thousand characters of platform internals.
-class OpenCloseCommand(BaseModel):
+class GestureResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    intent: Literal["gesture", "no_action"]
-    gesture: Literal[_OPEN_CLOSE_LETTERS] | None = None  # type: ignore[valid-type]
+    gesture: Literal[(*_OPEN_CLOSE_LETTERS, NO_ACTION_LETTER)]  # type: ignore[valid-type]
 
-    #: `O`, `C`, or empty for no_action. Empty is a real answer here — see the
-    #: note on `ProstheticCommand.serial_command`: there is no "hold" command,
-    #: so the honest representation of inaction is the absence of one.
-    serial_command: str = ""
-    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    @property
+    def is_inaction(self) -> bool:
+        return self.gesture == NO_ACTION_LETTER
 
-    #: Kept so a run can be grouped by what the model believed it saw, which is
-    #: not derivable from a two-letter answer.
-    detected_pattern: str | None = None
+    def as_prosthetic_command(self) -> ProstheticCommand:
+        """The wide shape, derived rather than claimed.
+
+        Everything downstream — protocol, range, kinematics, safety, metrics,
+        the movement frame — is written against `ProstheticCommand`, and none of
+        it needs rewriting for a narrower answer. What changes is the *source*
+        of `intent` and `serial_command`: the platform now derives them from the
+        letter instead of the model asserting them. So they can no longer be
+        wrong, and no longer measure anything about the model.
+        """
+        if self.is_inaction:
+            return ProstheticCommand(intent=NO_ACTION_INTENT, gesture=None, serial_command="")
+        return ProstheticCommand(
+            intent="gesture", gesture=self.gesture, serial_command=self.gesture
+        )
 
 
 def response_json_schema() -> dict[str, Any]:
@@ -253,7 +275,7 @@ def response_json_schema() -> dict[str, Any]:
     around the JSON — before it can happen, rather than catching it afterwards
     in the parse stage.
     """
-    return OpenCloseCommand.model_json_schema()
+    return GestureResponse.model_json_schema()
 
 
 def full_response_json_schema() -> dict[str, Any]:

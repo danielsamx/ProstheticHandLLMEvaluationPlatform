@@ -474,6 +474,11 @@ async def run_execution(
         else ExecutionStatus.VALIDATION_FAILED.value
     )
     if report.parsed_command is not None:
+        # The expanded command, not the model's literal reply. The reply is one
+        # field; `intent` and `serial_command` here were derived from it by the
+        # platform, so this object says more than the model did. What the model
+        # actually wrote is in `raw_response`, which is the field to read when
+        # the question is what it answered rather than what was executed.
         execution.parsed_response = report.parsed_command.model_dump(mode="json")
 
     execution.warning_count = len(report.warnings)

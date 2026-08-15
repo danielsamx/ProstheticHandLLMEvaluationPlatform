@@ -68,10 +68,17 @@ TECHNICAL_CONTEXT_NAME: Final[str] = "HANDi EPN V3 - multimodal control contract
 #: hiding the difference inside one.
 #:
 #: The actuator table is gone from it, not merely unmentioned. If the answer can
-#: only be O, C or no_action, then six ranges of positions are context spent on
-#: a vocabulary the model is not allowed to use - and worse, an invitation to
-#: use it. The encoder policy stays, because it governs whether a movement may
-#: happen at all, which is as true of opening as of anything else.
+#: only be O, C or nothing, then six ranges of positions are context spent on a
+#: vocabulary the model is not allowed to use - and worse, an invitation to use
+#: it.
+#:
+#: Two encoder lines went with it: the priority of physical encoders over
+#: simulated ones, and the rule that stale telemetry or a possible stall forbids
+#: a new movement. Both were true and neither was usable - the prompt carries no
+#: telemetry, so the model was being told to weigh evidence it does not receive.
+#: That is the same failure as printing a column of zeros for ZC. The rules
+#: themselves are not lost: they are enforced by the validation pipeline, on the
+#: side that actually has the encoder readings.
 TECHNICAL_CONTEXT_OPEN_CLOSE_VERSION: Final[str] = "1.0"
 TECHNICAL_CONTEXT_OPEN_CLOSE_NAME: Final[str] = "HANDi EPN V3 - open and close only"
 
@@ -175,22 +182,20 @@ def build_technical_context_open_close() -> str:
 
     return f"""\
 Supported commands
-{open_cmd} OPEN   fully open the hand
-{close_cmd} CLOSE  fully close the hand
-no_action      do not move
+{open_cmd} fully open the hand
+{close_cmd} fully close the hand
+"" do not move
 These three are the only permitted answers.
 Command format
-A single uppercase letter.
+A single uppercase letter, or the empty string.
 Never combine commands.
 Never send actuator positions.
 Safety
 Never generate impossible poses.
 {close_cmd} alone means CLOSE. It is never a finger position.
 Encoder policy
-Physical encoders take priority over simulated encoders.
 Do not move farther into an open or closed limit.
-Stale telemetry, a possible stall, or opposing motion forbids a new movement.
-no_action means no transmission and keeps the current position.
+"" means no transmission and keeps the current position.
 """
 
 

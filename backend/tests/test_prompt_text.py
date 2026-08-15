@@ -30,11 +30,16 @@ def test_every_block_starts_at_one_point_zero():
 
 def test_system_prompt_states_the_stimulus_and_the_three_answers():
     assert "one image of a processed surface EMG window" in SYSTEM_PROMPT
-    assert "serial_command are O, C, or the empty string" in SYSTEM_PROMPT
+    assert "exactly one field, gesture" in SYSTEM_PROMPT
+    assert 'permitted values of gesture are "O" to open, "C" to close, and ""' in SYSTEM_PROMPT
     # Inaction has to be named as an acceptable outcome. Left unsaid it reads as
     # a failure state, and a model avoiding it turns an ambiguous window into a
     # guess — which moves a motor.
-    assert "no_action is a valid and expected answer" in SYSTEM_PROMPT
+    assert '{"gesture": ""} is a valid and expected answer' in SYSTEM_PROMPT
+    # And the fields that are gone must not be asked for anywhere: a prompt that
+    # names a field the schema forbids sets the model up to violate the schema.
+    for removed in ("intent", "serial_command", "confidence", "no_action"):
+        assert removed not in SYSTEM_PROMPT
 
 
 def test_the_emg_block_does_not_ask_for_descriptors_the_flow_destroys():
@@ -52,9 +57,9 @@ def test_the_emg_block_does_not_ask_for_descriptors_the_flow_destroys():
 
 def test_the_emg_block_names_the_three_permitted_outcomes():
     text = build_emg_context()
-    assert "Choose CLOSE" in text
-    assert "Choose OPEN" in text
-    assert "Choose no_action" in text
+    assert "Choose C to close" in text
+    assert "Choose O to open" in text
+    assert 'Choose ""' in text
 
 
 def test_the_image_block_describes_the_filter_that_actually_ran():

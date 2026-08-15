@@ -97,24 +97,56 @@ def test_a_text_only_turn_still_gets_the_instruction_appended():
 # ── What the model is allowed to answer ─────────────────────────────────────
 
 
-def test_the_offered_schema_permits_only_open_close_and_no_action():
+def test_the_offered_schema_is_one_field_with_three_values():
     """The schema is enforced, so it is the strongest statement of the contract.
 
-    It used to offer fourteen gesture letters, six actuators and an integer
-    position each, while the technical block said the only permitted answers
-    were O, C and no_action. The model was handed two contracts and the wider
-    one was the one the runtime enforced.
+    It has been narrowed twice. From fourteen gesture letters and six actuator
+    positions — which contradicted a technical block saying only O, C and
+    inaction were permitted, and the wider one was the one the runtime enforced.
+    Then from four fields to one, because a response with `intent`,
+    `serial_command` and `confidence` could disagree with itself, and did.
     """
     from app.schemas.llm_output import response_json_schema
 
     schema = response_json_schema()
-    properties = schema["properties"]
 
-    assert properties["intent"]["enum"] == ["gesture", "no_action"]
-    assert properties["gesture"]["anyOf"][0]["enum"] == ["O", "C"]
-    for absent in ("commands", "safety", "hand"):
-        assert absent not in properties
+    assert list(schema["properties"]) == ["gesture"]
+    assert schema["properties"]["gesture"]["enum"] == ["O", "C", ""]
+    assert schema["required"] == ["gesture"]
+    assert schema["additionalProperties"] is False
     assert "$defs" not in schema
+
+
+def test_a_bare_gesture_reply_becomes_a_full_command():
+    """Everything downstream is written against the wide shape and does not
+    change. What changes is the source of `intent` and `serial_command`: derived
+    by the platform, not claimed by the model — so they can no longer be wrong,
+    and no longer measure anything about it."""
+    from app.schemas.llm_output import GestureResponse
+
+    closing = GestureResponse.model_validate({"gesture": "C"}).as_prosthetic_command()
+    assert closing.intent == "gesture"
+    assert closing.serial_command == "C"
+    assert closing.confidence is None
+
+    resting = GestureResponse.model_validate({"gesture": ""}).as_prosthetic_command()
+    assert resting.is_inaction
+    assert resting.serial_command == ""
+
+
+def test_a_reply_with_extra_fields_is_a_schema_violation():
+    """Not repaired. A response that does not meet the contract is a failed
+    response, and quietly dropping the extra fields would hide that the model
+    was answering a different question."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.llm_output import GestureResponse
+
+    with pytest.raises(ValidationError):
+        GestureResponse.model_validate({"gesture": "O", "confidence": 0.9})
+    with pytest.raises(ValidationError):
+        GestureResponse.model_validate({"gesture": "P"})
 
 
 def test_the_offered_schema_carries_no_prose():
